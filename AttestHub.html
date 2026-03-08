@@ -20,6 +20,10 @@ var state = {
   selectedTeam: null,
   reviewSource: 'dashboard',
   historyFilter: 'all',
+  showCreateAtt: false,
+  showCreateUser: false,
+  newAtt: {name:'',scheme:'AusPayNet',due:'',desc:'',teams:[],checklist:[]},
+  newUser: {name:'',role:'crew',atts:[]},
   users: [
     {id:'u1',name:'Purvi Kapur',role:'admin',atts:['a1','a2','a3']},
     {id:'u2',name:'Alex Morgan',role:'reviewer',atts:['a1','a2','a3']},
@@ -99,7 +103,25 @@ function loadSubmissions() {
   } catch(e) { return null; }
 }
 
+function saveAttestations() {
+  try { localStorage.setItem('attesthub_attestations',JSON.stringify(state.attestations)); } catch(e) {}
+}
+function loadAttestations() {
+  try { var r=localStorage.getItem('attesthub_attestations'); return r?JSON.parse(r):null; } catch(e) { return null; }
+}
+function saveUsers() {
+  try { localStorage.setItem('attesthub_users',JSON.stringify(state.users)); } catch(e) {}
+}
+function loadUsers() {
+  try { var r=localStorage.getItem('attesthub_users'); return r?JSON.parse(r):null; } catch(e) { return null; }
+}
+
 function initState() {
+  var savedAtts = loadAttestations();
+  if (savedAtts && savedAtts.length > 0) state.attestations = savedAtts;
+  var savedUsers = loadUsers();
+  if (savedUsers && savedUsers.length > 0) state.users = savedUsers;
+
   var saved = loadSubmissions();
   if (saved && saved.length > 0) {
     state.submissions = saved;
@@ -907,9 +929,168 @@ function renderReview() {
 // ═══════════ ADMIN ATTESTATIONS ═══════════
 function renderAdminAtts() {
   var wrap = h('div',{style:{padding:'28px',maxWidth:'850px'}});
-  wrap.appendChild(h('h1',{style:{fontSize:'20px',fontWeight:'700',marginBottom:'4px'}},'Attestation Manager'));
-  wrap.appendChild(h('p',{style:{fontSize:'13px',color:'#64748b',marginBottom:'24px'}},'Create attestations, build checklists, and assign teams'));
+  var inputStyle = {border:'1px solid #e2e8f0',borderRadius:'8px',padding:'10px 12px',fontSize:'13px',width:'100%',fontFamily:'inherit',outline:'none',boxSizing:'border-box'};
+  var labelStyle = {fontSize:'11px',fontWeight:'600',color:'#64748b',display:'block',marginBottom:'4px'};
+  var fieldWrap = {marginBottom:'14px'};
 
+  // Header row
+  var hdr = h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'24px'}});
+  hdr.appendChild(h('div',{},[
+    h('h1',{style:{fontSize:'20px',fontWeight:'700',marginBottom:'2px'}},'Attestation Manager'),
+    h('p',{style:{fontSize:'13px',color:'#64748b'}},'Create attestations, build checklists, and assign teams')
+  ]));
+  hdr.appendChild(h('button',{style:{
+    padding:'8px 16px',fontSize:'13px',fontWeight:'600',border:'none',borderRadius:'8px',
+    background:state.showCreateAtt?'#f1f5f9':'#2563eb',color:state.showCreateAtt?'#475569':'#fff',cursor:'pointer'
+  },onClick:function(){
+    state.showCreateAtt = !state.showCreateAtt;
+    if (!state.showCreateAtt) state.newAtt = {name:'',scheme:'AusPayNet',due:'',desc:'',teams:[],checklist:[]};
+    render();
+  }},state.showCreateAtt?'✕ Cancel':'＋ New Attestation'));
+  wrap.appendChild(hdr);
+
+  // Create form
+  if (state.showCreateAtt) {
+    var form = h('div',{style:{background:'#fff',borderRadius:'12px',border:'2px solid #bfdbfe',padding:'20px',marginBottom:'20px'}});
+    form.appendChild(h('p',{style:{fontSize:'13px',fontWeight:'700',color:'#1e293b',marginBottom:'16px'}},'New Attestation'));
+
+    // Name
+    var nf = h('div',{style:fieldWrap});
+    nf.appendChild(h('label',{style:labelStyle},'Attestation Name *'));
+    var nameIn = h('input',{type:'text',placeholder:'e.g. AusPayNet Annual Security Attestation',style:inputStyle});
+    nameIn.value = state.newAtt.name;
+    nameIn.addEventListener('input',function(){state.newAtt.name=this.value;});
+    nf.appendChild(nameIn);
+    form.appendChild(nf);
+
+    // Scheme + Due date (side by side)
+    var row2 = h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px',marginBottom:'14px'}});
+    var sf = h('div',{});
+    sf.appendChild(h('label',{style:labelStyle},'Scheme'));
+    var schemeEl = h('select',{style:inputStyle});
+    ['AusPayNet','AP+'].forEach(function(s){
+      var opt = h('option',{value:s},s);
+      if (state.newAtt.scheme===s) opt.selected = true;
+      schemeEl.appendChild(opt);
+    });
+    schemeEl.addEventListener('change',function(){state.newAtt.scheme=this.value;});
+    sf.appendChild(schemeEl);
+    row2.appendChild(sf);
+    var df = h('div',{});
+    df.appendChild(h('label',{style:labelStyle},'Due Date'));
+    var dateEl = h('input',{type:'date',style:inputStyle});
+    dateEl.value = state.newAtt.due;
+    dateEl.addEventListener('change',function(){state.newAtt.due=this.value;});
+    df.appendChild(dateEl);
+    row2.appendChild(df);
+    form.appendChild(row2);
+
+    // Description
+    var descF = h('div',{style:fieldWrap});
+    descF.appendChild(h('label',{style:labelStyle},'Description'));
+    var descEl = h('textarea',{style:Object.assign({},inputStyle,{height:'70px',resize:'none'})});
+    descEl.value = state.newAtt.desc;
+    descEl.addEventListener('input',function(){state.newAtt.desc=this.value;});
+    descF.appendChild(descEl);
+    form.appendChild(descF);
+
+    // Assign Teams
+    var crewUsers = state.users.filter(function(u){return u.role==='crew';});
+    if (crewUsers.length) {
+      var tf = h('div',{style:fieldWrap});
+      tf.appendChild(h('label',{style:labelStyle},'Assign Teams'));
+      crewUsers.forEach(function(u){
+        var checked = state.newAtt.teams.indexOf(u.id) >= 0;
+        var lbl = h('label',{style:{display:'flex',alignItems:'center',gap:'8px',fontSize:'13px',color:'#475569',marginBottom:'6px',cursor:'pointer'}});
+        var cb = h('input',{type:'checkbox'});
+        cb.checked = checked;
+        cb.addEventListener('change',function(){
+          if (this.checked) state.newAtt.teams.push(u.id);
+          else state.newAtt.teams = state.newAtt.teams.filter(function(id){return id!==u.id;});
+        });
+        lbl.appendChild(cb);
+        lbl.appendChild(document.createTextNode(u.name));
+        tf.appendChild(lbl);
+      });
+      form.appendChild(tf);
+    }
+
+    // Checklist builder
+    var clf = h('div',{style:{marginTop:'4px'}});
+    clf.appendChild(h('label',{style:Object.assign({},labelStyle,{marginBottom:'10px'})},'Checklist Items'));
+    state.newAtt.checklist.forEach(function(item, i) {
+      var row = h('div',{style:{background:'#f8fafc',borderRadius:'8px',border:'1px solid #e2e8f0',padding:'12px',marginBottom:'8px'}});
+      var rowTop = h('div',{style:{display:'flex',gap:'8px',marginBottom:'8px',alignItems:'center'}});
+      var titleEl = h('input',{type:'text',placeholder:'Item title',style:Object.assign({},inputStyle,{flex:'1'})});
+      titleEl.value = item.title;
+      titleEl.addEventListener('input',function(){state.newAtt.checklist[i].title=this.value;});
+      rowTop.appendChild(titleEl);
+      rowTop.appendChild(h('button',{style:{width:'28px',height:'28px',borderRadius:'6px',border:'none',background:'#fee2e2',color:'#dc2626',cursor:'pointer',fontSize:'14px',flexShrink:'0'},
+        onClick:function(){state.newAtt.checklist=state.newAtt.checklist.filter(function(x){return x.id!==item.id;});render();}
+      },'✕'));
+      row.appendChild(rowTop);
+      var descEl2 = h('textarea',{style:Object.assign({},inputStyle,{height:'50px',resize:'none',marginBottom:'8px'})});
+      descEl2.placeholder = 'Item description';
+      descEl2.value = item.desc;
+      descEl2.addEventListener('input',function(){state.newAtt.checklist[i].desc=this.value;});
+      row.appendChild(descEl2);
+      var rowBot = h('div',{style:{display:'flex',gap:'12px',alignItems:'center'}});
+      var typeEl = h('select',{style:Object.assign({},inputStyle,{width:'auto',flex:'1'})});
+      [{v:'both',l:'Text + Screenshot'},{v:'text',l:'Text only'},{v:'screenshot',l:'Screenshot only'}].forEach(function(o){
+        var opt = h('option',{value:o.v},o.l);
+        if (item.type===o.v) opt.selected = true;
+        typeEl.appendChild(opt);
+      });
+      typeEl.addEventListener('change',function(){state.newAtt.checklist[i].type=this.value;});
+      rowBot.appendChild(typeEl);
+      var reqLbl = h('label',{style:{display:'flex',alignItems:'center',gap:'6px',fontSize:'12px',color:'#64748b',cursor:'pointer',whiteSpace:'nowrap'}});
+      var reqCb = h('input',{type:'checkbox'});
+      reqCb.checked = item.req;
+      reqCb.addEventListener('change',function(){state.newAtt.checklist[i].req=this.checked;});
+      reqLbl.appendChild(reqCb);
+      reqLbl.appendChild(document.createTextNode('Required'));
+      rowBot.appendChild(reqLbl);
+      row.appendChild(rowBot);
+      clf.appendChild(row);
+    });
+    clf.appendChild(h('button',{style:{fontSize:'12px',color:'#2563eb',border:'1px dashed #bfdbfe',background:'#eff6ff',borderRadius:'8px',padding:'6px 14px',cursor:'pointer',width:'100%'},
+      onClick:function(){state.newAtt.checklist.push({id:'c-'+Date.now(),title:'',desc:'',type:'both',req:true});render();}
+    },'＋ Add checklist item'));
+    form.appendChild(clf);
+
+    // Buttons
+    form.appendChild(h('div',{style:{display:'flex',justifyContent:'flex-end',gap:'8px',marginTop:'20px',paddingTop:'16px',borderTop:'1px solid #f1f5f9'}},[
+      h('button',{style:{padding:'8px 16px',fontSize:'13px',border:'1px solid #e2e8f0',borderRadius:'8px',background:'#fff',color:'#475569',cursor:'pointer'},
+        onClick:function(){state.showCreateAtt=false;state.newAtt={name:'',scheme:'AusPayNet',due:'',desc:'',teams:[],checklist:[]};render();}
+      },'Cancel'),
+      h('button',{style:{padding:'8px 20px',fontSize:'13px',fontWeight:'600',border:'none',borderRadius:'8px',background:'#2563eb',color:'#fff',cursor:'pointer'},
+        onClick:function(){
+          if (!state.newAtt.name.trim()) { alert('Attestation name is required.'); return; }
+          var newAtt = {
+            id:'a-'+Date.now(),
+            name:state.newAtt.name.trim(),
+            scheme:state.newAtt.scheme,
+            due:state.newAtt.due,
+            desc:state.newAtt.desc.trim(),
+            teams:state.newAtt.teams.slice(),
+            checklist:state.newAtt.checklist.map(function(item){return {id:item.id,title:item.title,desc:item.desc,type:item.type,req:item.req};})
+          };
+          state.attestations.push(newAtt);
+          state.newAtt.teams.forEach(function(uid){
+            var user = state.users.find(function(u){return u.id===uid;});
+            if (user && user.atts.indexOf(newAtt.id)<0) user.atts.push(newAtt.id);
+          });
+          saveAttestations(); saveUsers();
+          state.newAtt = {name:'',scheme:'AusPayNet',due:'',desc:'',teams:[],checklist:[]};
+          state.showCreateAtt = false;
+          render();
+        }
+      },'Create Attestation')
+    ]));
+    wrap.appendChild(form);
+  }
+
+  // Existing attestation list
   state.attestations.forEach(function(att) {
     var card = h('div',{style:{background:'#fff',borderRadius:'12px',border:'1px solid #f1f5f9',padding:'16px',marginBottom:'12px'}});
     var schemeC = att.scheme==='AP+'?{bg:'#faf5ff',c:'#7c3aed',b:'#ddd6fe'}:{bg:'#eff6ff',c:'#2563eb',b:'#bfdbfe'};
@@ -943,9 +1124,97 @@ function renderAdminAtts() {
 // ═══════════ ADMIN USERS ═══════════
 function renderAdminUsers() {
   var wrap = h('div',{style:{padding:'28px',maxWidth:'700px'}});
-  wrap.appendChild(h('h1',{style:{fontSize:'20px',fontWeight:'700',marginBottom:'4px'}},'Team Management'));
-  wrap.appendChild(h('p',{style:{fontSize:'13px',color:'#64748b',marginBottom:'24px'}},'Manage users and attestation assignments'));
+  var inputStyle = {border:'1px solid #e2e8f0',borderRadius:'8px',padding:'10px 12px',fontSize:'13px',width:'100%',fontFamily:'inherit',outline:'none',boxSizing:'border-box'};
+  var labelStyle = {fontSize:'11px',fontWeight:'600',color:'#64748b',display:'block',marginBottom:'4px'};
 
+  // Header row
+  var hdr = h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'24px'}});
+  hdr.appendChild(h('div',{},[
+    h('h1',{style:{fontSize:'20px',fontWeight:'700',marginBottom:'2px'}},'Team Management'),
+    h('p',{style:{fontSize:'13px',color:'#64748b'}},'Manage users and attestation assignments')
+  ]));
+  hdr.appendChild(h('button',{style:{
+    padding:'8px 16px',fontSize:'13px',fontWeight:'600',border:'none',borderRadius:'8px',
+    background:state.showCreateUser?'#f1f5f9':'#2563eb',color:state.showCreateUser?'#475569':'#fff',cursor:'pointer'
+  },onClick:function(){
+    state.showCreateUser = !state.showCreateUser;
+    if (!state.showCreateUser) state.newUser = {name:'',role:'crew',atts:[]};
+    render();
+  }},state.showCreateUser?'✕ Cancel':'＋ Add Member'));
+  wrap.appendChild(hdr);
+
+  // Create form
+  if (state.showCreateUser) {
+    var form = h('div',{style:{background:'#fff',borderRadius:'12px',border:'2px solid #bfdbfe',padding:'20px',marginBottom:'20px'}});
+    form.appendChild(h('p',{style:{fontSize:'13px',fontWeight:'700',color:'#1e293b',marginBottom:'16px'}},'New Member'));
+
+    // Name
+    var nf = h('div',{style:{marginBottom:'14px'}});
+    nf.appendChild(h('label',{style:labelStyle},'Name *'));
+    var nameIn = h('input',{type:'text',placeholder:'e.g. Fraud & Risk Team',style:inputStyle});
+    nameIn.value = state.newUser.name;
+    nameIn.addEventListener('input',function(){state.newUser.name=this.value;});
+    nf.appendChild(nameIn);
+    form.appendChild(nf);
+
+    // Role
+    var rf = h('div',{style:{marginBottom:'14px'}});
+    rf.appendChild(h('label',{style:labelStyle},'Role'));
+    var roleEl = h('select',{style:inputStyle});
+    [{v:'crew',l:'Crew'},{v:'reviewer',l:'Reviewer'},{v:'admin',l:'Admin'}].forEach(function(o){
+      var opt = h('option',{value:o.v},o.l);
+      if (state.newUser.role===o.v) opt.selected = true;
+      roleEl.appendChild(opt);
+    });
+    roleEl.addEventListener('change',function(){state.newUser.role=this.value;});
+    rf.appendChild(roleEl);
+    form.appendChild(rf);
+
+    // Assign Attestations
+    if (state.attestations.length) {
+      var af = h('div',{style:{marginBottom:'14px'}});
+      af.appendChild(h('label',{style:labelStyle},'Assign Attestations'));
+      state.attestations.forEach(function(att){
+        var checked = state.newUser.atts.indexOf(att.id) >= 0;
+        var lbl = h('label',{style:{display:'flex',alignItems:'center',gap:'8px',fontSize:'13px',color:'#475569',marginBottom:'6px',cursor:'pointer'}});
+        var cb = h('input',{type:'checkbox'});
+        cb.checked = checked;
+        cb.addEventListener('change',function(){
+          if (this.checked) state.newUser.atts.push(att.id);
+          else state.newUser.atts = state.newUser.atts.filter(function(id){return id!==att.id;});
+        });
+        lbl.appendChild(cb);
+        lbl.appendChild(document.createTextNode(att.name));
+        af.appendChild(lbl);
+      });
+      form.appendChild(af);
+    }
+
+    // Buttons
+    form.appendChild(h('div',{style:{display:'flex',justifyContent:'flex-end',gap:'8px',marginTop:'20px',paddingTop:'16px',borderTop:'1px solid #f1f5f9'}},[
+      h('button',{style:{padding:'8px 16px',fontSize:'13px',border:'1px solid #e2e8f0',borderRadius:'8px',background:'#fff',color:'#475569',cursor:'pointer'},
+        onClick:function(){state.showCreateUser=false;state.newUser={name:'',role:'crew',atts:[]};render();}
+      },'Cancel'),
+      h('button',{style:{padding:'8px 20px',fontSize:'13px',fontWeight:'600',border:'none',borderRadius:'8px',background:'#2563eb',color:'#fff',cursor:'pointer'},
+        onClick:function(){
+          if (!state.newUser.name.trim()) { alert('Name is required.'); return; }
+          var newUser = {id:'u-'+Date.now(),name:state.newUser.name.trim(),role:state.newUser.role,atts:state.newUser.atts.slice()};
+          state.users.push(newUser);
+          state.newUser.atts.forEach(function(attId){
+            var att = state.attestations.find(function(a){return a.id===attId;});
+            if (att && att.teams.indexOf(newUser.id)<0) att.teams.push(newUser.id);
+          });
+          saveUsers(); saveAttestations();
+          state.newUser = {name:'',role:'crew',atts:[]};
+          state.showCreateUser = false;
+          render();
+        }
+      },'Add Member')
+    ]));
+    wrap.appendChild(form);
+  }
+
+  // Existing user list
   state.users.forEach(function(u) {
     var colors = {admin:'#6366f1',reviewer:'#14b8a6',crew:'#64748b'};
     var card = h('div',{style:{background:'#fff',borderRadius:'12px',border:'1px solid #f1f5f9',padding:'14px 16px',marginBottom:'8px',display:'flex',alignItems:'center',gap:'12px'}});
