@@ -18,6 +18,8 @@ var state = {
   view: 'login',
   selectedAtt: null,
   selectedTeam: null,
+  reviewSource: 'dashboard',
+  historyFilter: 'all',
   users: [
     {id:'u1',name:'Purvi Kapur',role:'admin',atts:['a1','a2','a3']},
     {id:'u2',name:'Alex Morgan',role:'reviewer',atts:['a1','a2','a3']},
@@ -77,8 +79,40 @@ var state = {
   ]
 };
 
-// Pre-compute AI review for sample
-state.submissions[0].aiReview = runAI(state.submissions[0], state.attestations[0]);
+// ═══════════ PERSISTENCE ═══════════
+function saveSubmissions() {
+  var toSave = state.submissions.map(function(s) {
+    var sc = {id:s.id,attId:s.attId,teamId:s.teamId,at:s.at,status:s.status,
+              aiReview:s.aiReview,manualReview:s.manualReview,responses:{}};
+    Object.keys(s.responses).forEach(function(k){
+      sc.responses[k] = {text:s.responses[k].text,files:[]};
+    });
+    return sc;
+  });
+  try { localStorage.setItem('attesthub_submissions',JSON.stringify(toSave)); } catch(e) {}
+}
+
+function loadSubmissions() {
+  try {
+    var raw = localStorage.getItem('attesthub_submissions');
+    return raw ? JSON.parse(raw) : null;
+  } catch(e) { return null; }
+}
+
+function initState() {
+  var saved = loadSubmissions();
+  if (saved && saved.length > 0) {
+    state.submissions = saved;
+    state.submissions.forEach(function(s) {
+      if (!s.aiReview) {
+        var att = state.attestations.find(function(a){ return a.id === s.attId; });
+        if (att) s.aiReview = runAI(s, att);
+      }
+    });
+  } else {
+    state.submissions[0].aiReview = runAI(state.submissions[0], state.attestations[0]);
+  }
+}
 
 // ═══════════ AI REVIEW ENGINE ═══════════
 function runAI(sub, att) {
@@ -264,6 +298,7 @@ function renderMain() {
   var main = h('div',{style:{flex:'1',overflowY:'auto',background:'#f8fafc'}});
 
   if (state.view==='dashboard') main.appendChild(renderDashboard());
+  else if (state.view==='history') main.appendChild(renderHistory());
   else if (state.view==='submit') main.appendChild(renderSubmit());
   else if (state.view==='review') main.appendChild(renderReview());
   else if (state.view==='admin-atts') main.appendChild(renderAdminAtts());
@@ -282,7 +317,7 @@ function renderSidebar() {
   sb.appendChild(h('div',{style:{padding:'16px 20px',borderBottom:'1px solid #f1f5f9',fontWeight:'700',fontSize:'15px',color:'#1e293b'}},'🛡️ AttestHub'));
 
   var nav = h('div',{style:{flex:'1',padding:'12px'}});
-  var items = [{id:'dashboard',label:'📊 Dashboard'}];
+  var items = [{id:'dashboard',label:'📊 Dashboard'},{id:'history',label:'📂 History'}];
   if (adm) {
     items.push({id:'admin-atts',label:'📋 Attestations'});
     items.push({id:'admin-users',label:'👥 Team Management'});
@@ -397,12 +432,12 @@ function renderDashboard() {
         ]);
         if (ts==='submitted') {
           chip.appendChild(h('button',{style:{fontSize:'11px',color:'#2563eb',border:'none',background:'none',cursor:'pointer',textDecoration:'underline',marginLeft:'2px'},
-            onClick:function(){state.selectedAtt=att;state.selectedTeam=tid;state.view='review';render();}
+            onClick:function(){state.reviewSource='dashboard';state.selectedAtt=att;state.selectedTeam=tid;state.view='review';render();}
           },'Review'));
         }
         if (ts==='approved'||ts==='rejected'||ts==='partial') {
           chip.appendChild(h('button',{style:{fontSize:'11px',color:'#64748b',border:'none',background:'none',cursor:'pointer',textDecoration:'underline',marginLeft:'2px'},
-            onClick:function(){state.selectedAtt=att;state.selectedTeam=tid;state.view='review';render();}
+            onClick:function(){state.reviewSource='dashboard';state.selectedAtt=att;state.selectedTeam=tid;state.view='review';render();}
           },'View'));
         }
         chips.appendChild(chip);
@@ -413,6 +448,100 @@ function renderDashboard() {
     card.appendChild(header);
     wrap.appendChild(card);
   });
+  return wrap;
+}
+
+// ═══════════ HISTORY VIEW ═══════════
+function renderHistory() {
+  var u = state.currentUser;
+  var isCrew = u.role === 'crew';
+  var wrap = h('div',{style:{padding:'28px',maxWidth:'900px'}});
+
+  wrap.appendChild(h('h1',{style:{fontSize:'20px',fontWeight:'700',marginBottom:'4px'}},'Attestation History'));
+  wrap.appendChild(h('p',{style:{fontSize:'13px',color:'#64748b',marginBottom:'6px'}},isCrew?'Your past submissions.':'All submissions across teams.'));
+  wrap.appendChild(h('p',{style:{fontSize:'11px',color:'#94a3b8',marginBottom:'20px'}},'ℹ Uploaded screenshots are not persisted across sessions.'));
+
+  var stColors = {submitted:{bg:'#dbeafe',c:'#2563eb'},approved:{bg:'#dcfce7',c:'#16a34a'},rejected:{bg:'#fee2e2',c:'#dc2626'},partial:{bg:'#fef9c3',c:'#a16207'},'not-submitted':{bg:'#f3f4f6',c:'#6b7280'}};
+
+  if (!isCrew) {
+    var filters = [{v:'all',l:'All'},{v:'submitted',l:'Submitted'},{v:'approved',l:'Approved'},{v:'partial',l:'Partial'},{v:'rejected',l:'Rejected'}];
+    var bar = h('div',{style:{display:'flex',gap:'4px',background:'#f1f5f9',borderRadius:'8px',padding:'4px',width:'fit-content',marginBottom:'20px'}});
+    filters.forEach(function(f) {
+      var active = state.historyFilter === f.v;
+      bar.appendChild(h('button',{style:{
+        padding:'5px 12px',fontSize:'12px',fontWeight:'500',borderRadius:'6px',border:'none',cursor:'pointer',
+        background:active?'#fff':'transparent',color:active?'#1e293b':'#64748b',
+        boxShadow:active?'0 1px 2px rgba(0,0,0,.05)':'none'
+      },onClick:function(){state.historyFilter=f.v;render();}},f.l));
+    });
+    wrap.appendChild(bar);
+  }
+
+  var subs = state.submissions.filter(function(s) {
+    if (isCrew) return s.teamId === u.id;
+    return true;
+  });
+  if (!isCrew && state.historyFilter !== 'all') {
+    subs = subs.filter(function(s){ return s.status === state.historyFilter; });
+  }
+  subs = subs.slice().sort(function(a,b){ return b.at.localeCompare(a.at); });
+
+  if (!subs.length) {
+    wrap.appendChild(h('div',{style:{background:'#fff',borderRadius:'12px',border:'1px solid #f1f5f9',padding:'48px',textAlign:'center',color:'#94a3b8'}},'No attestation history yet.'));
+    return wrap;
+  }
+
+  subs.forEach(function(sub) {
+    var att = state.attestations.find(function(a){ return a.id === sub.attId; });
+    if (!att) return;
+    var team = state.users.find(function(tu){ return tu.id === sub.teamId; });
+    var ai = sub.aiReview;
+    var sc = stColors[sub.status] || stColors['not-submitted'];
+    var schemeC = att.scheme==='AP+'?{bg:'#faf5ff',c:'#7c3aed',b:'#ddd6fe'}:{bg:'#eff6ff',c:'#2563eb',b:'#bfdbfe'};
+
+    var card = h('div',{style:{
+      background:'#fff',borderRadius:'12px',border:'1px solid #f1f5f9',
+      boxShadow:'0 1px 3px rgba(0,0,0,.04)',marginBottom:'12px',padding:'16px 20px',
+      display:'flex',alignItems:'center',gap:'16px',cursor:'pointer'
+    },onClick:function(){
+      state.reviewSource='history';
+      state.selectedAtt=att;
+      state.selectedTeam=sub.teamId;
+      state.view='review';
+      render();
+    }});
+
+    var left = h('div',{style:{flex:'1',minWidth:'0'}});
+    left.appendChild(h('span',{style:{fontSize:'10px',padding:'2px 7px',borderRadius:'20px',background:schemeC.bg,color:schemeC.c,border:'1px solid '+schemeC.b}},att.scheme));
+    left.appendChild(h('div',{style:{fontWeight:'600',fontSize:'14px',color:'#1e293b',marginTop:'4px',marginBottom:'2px'}},att.name));
+    left.appendChild(h('div',{style:{fontSize:'11px',color:'#94a3b8'}},(team?team.name:sub.teamId)+' · '+fmtDate(sub.at)));
+
+    var mid = h('div',{style:{textAlign:'center',flexShrink:'0',minWidth:'70px'}});
+    if (ai) {
+      mid.appendChild(h('div',{style:{fontSize:'20px',fontWeight:'800',color:ai.color}},ai.overall+'%'));
+      mid.appendChild(h('div',{style:{fontSize:'10px',color:ai.color,fontWeight:'600'}},ai.label));
+    }
+
+    var right = h('div',{style:{display:'flex',alignItems:'center',gap:'10px',flexShrink:'0'}});
+    right.appendChild(h('span',{style:{fontSize:'11px',padding:'3px 10px',borderRadius:'20px',background:sc.bg,color:sc.c,fontWeight:'600'}},sub.status.charAt(0).toUpperCase()+sub.status.slice(1)));
+    right.appendChild(h('button',{style:{
+      padding:'6px 12px',fontSize:'12px',fontWeight:'600',borderRadius:'8px',border:'none',
+      background:'#f1f5f9',color:'#475569',cursor:'pointer',flexShrink:'0'
+    },onClick:function(e){
+      e.stopPropagation();
+      state.reviewSource='history';
+      state.selectedAtt=att;
+      state.selectedTeam=sub.teamId;
+      state.view='review';
+      render();
+    }},'View Details'));
+
+    card.appendChild(left);
+    card.appendChild(mid);
+    card.appendChild(right);
+    wrap.appendChild(card);
+  });
+
   return wrap;
 }
 
@@ -566,6 +695,7 @@ function renderSubmit() {
         } else {
           state.submissions.push(newSub);
         }
+        saveSubmissions();
         state.view='dashboard'; render();
       }
     },'Submit for Review'));
@@ -587,8 +717,8 @@ function renderReview() {
   var wrap = h('div',{style:{padding:'28px',maxWidth:'850px'}});
 
   wrap.appendChild(h('button',{style:{fontSize:'13px',color:'#64748b',border:'none',background:'none',cursor:'pointer',marginBottom:'16px',padding:'0'},
-    onClick:function(){state.view='dashboard';render();}
-  },'← Back to dashboard'));
+    onClick:function(){state.view=state.reviewSource||'dashboard';render();}
+  },'← Back to '+(state.reviewSource==='history'?'history':'dashboard')));
 
   if (!sub) {
     wrap.appendChild(h('div',{style:{background:'#fff',borderRadius:'12px',border:'1px solid #f1f5f9',padding:'48px',textAlign:'center',color:'#94a3b8'}},'No submission found from '+(team?team.name:tid)+'.'));
@@ -727,6 +857,7 @@ function renderReview() {
         onClick:function(){
           sub.status = decision;
           sub.manualReview = {status:decision,comments:commentText,by:state.currentUser.name,at:new Date().toISOString().slice(0,10)};
+          saveSubmissions();
           state.view='dashboard'; render();
         }
       },'Save Review & Notify Team')
@@ -829,6 +960,7 @@ function renderAdminUsers() {
 }
 
 // Boot
+initState();
 render();
 </script>
 </body>
