@@ -23,6 +23,7 @@ var state = {
   showCreateAtt: false,
   showCreateUser: false,
   newAtt: {name:'',scheme:'AusPayNet',due:'',desc:'',teams:[],checklist:[]},
+  newTeamName: '',
   newUser: {name:'',role:'crew',atts:[]},
   users: [
     {id:'u1',name:'Purvi Kapur',role:'admin',atts:['a1','a2','a3']},
@@ -996,24 +997,41 @@ function renderAdminAtts() {
 
     // Assign Teams
     var crewUsers = state.users.filter(function(u){return u.role==='crew';});
-    if (crewUsers.length) {
-      var tf = h('div',{style:fieldWrap});
-      tf.appendChild(h('label',{style:labelStyle},'Assign Teams'));
-      crewUsers.forEach(function(u){
-        var checked = state.newAtt.teams.indexOf(u.id) >= 0;
-        var lbl = h('label',{style:{display:'flex',alignItems:'center',gap:'8px',fontSize:'13px',color:'#475569',marginBottom:'6px',cursor:'pointer'}});
-        var cb = h('input',{type:'checkbox'});
-        cb.checked = checked;
-        cb.addEventListener('change',function(){
-          if (this.checked) state.newAtt.teams.push(u.id);
-          else state.newAtt.teams = state.newAtt.teams.filter(function(id){return id!==u.id;});
-        });
-        lbl.appendChild(cb);
-        lbl.appendChild(document.createTextNode(u.name));
-        tf.appendChild(lbl);
+    var tf = h('div',{style:fieldWrap});
+    tf.appendChild(h('label',{style:labelStyle},'Assign Teams'));
+    crewUsers.forEach(function(u){
+      var checked = state.newAtt.teams.indexOf(u.id) >= 0;
+      var lbl = h('label',{style:{display:'flex',alignItems:'center',gap:'8px',fontSize:'13px',color:'#475569',marginBottom:'6px',cursor:'pointer'}});
+      var cb = h('input',{type:'checkbox'});
+      cb.checked = checked;
+      cb.addEventListener('change',function(){
+        if (this.checked) state.newAtt.teams.push(u.id);
+        else state.newAtt.teams = state.newAtt.teams.filter(function(id){return id!==u.id;});
       });
-      form.appendChild(tf);
-    }
+      lbl.appendChild(cb);
+      lbl.appendChild(document.createTextNode(u.name));
+      tf.appendChild(lbl);
+    });
+    // Inline create new team
+    var addTeamRow = h('div',{style:{display:'flex',gap:'8px',marginTop:'8px'}});
+    var newTeamIn = h('input',{type:'text',placeholder:'New team name…',style:Object.assign({},inputStyle,{flex:'1'})});
+    newTeamIn.value = state.newTeamName;
+    newTeamIn.addEventListener('input',function(){state.newTeamName=this.value;});
+    addTeamRow.appendChild(newTeamIn);
+    addTeamRow.appendChild(h('button',{style:{padding:'8px 14px',fontSize:'12px',fontWeight:'600',border:'none',borderRadius:'8px',background:'#2563eb',color:'#fff',cursor:'pointer',whiteSpace:'nowrap'},
+      onClick:function(){
+        var name = state.newTeamName.trim();
+        if (!name) return;
+        var newUser = {id:'u-'+Date.now(),name:name,role:'crew',atts:[]};
+        state.users.push(newUser);
+        state.newAtt.teams.push(newUser.id);
+        state.newTeamName = '';
+        saveUsers();
+        render();
+      }
+    },'＋ Add team'));
+    tf.appendChild(addTeamRow);
+    form.appendChild(tf);
 
     // Checklist builder
     var clf = h('div',{style:{marginTop:'4px'}});
@@ -1081,7 +1099,7 @@ function renderAdminAtts() {
             if (user && user.atts.indexOf(newAtt.id)<0) user.atts.push(newAtt.id);
           });
           saveAttestations(); saveUsers();
-          state.newAtt = {name:'',scheme:'AusPayNet',due:'',desc:'',teams:[],checklist:[]};
+          state.newAtt = {name:'',scheme:'AusPayNet',due:'',desc:'',teams:[],checklist:[]}; state.newTeamName='';
           state.showCreateAtt = false;
           render();
         }
