@@ -1,0 +1,835 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AttestHub</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f5f7fa;color:#1e293b}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+// ═══════════ DATA ═══════════
+var state = {
+  currentUser: null,
+  view: 'login',
+  selectedAtt: null,
+  selectedTeam: null,
+  users: [
+    {id:'u1',name:'Purvi Kapur',role:'admin',atts:['a1','a2','a3']},
+    {id:'u2',name:'Alex Morgan',role:'reviewer',atts:['a1','a2','a3']},
+    {id:'u3',name:'Payments Team',role:'crew',atts:['a1','a3']},
+    {id:'u4',name:'Risk & Compliance',role:'crew',atts:['a1','a2']},
+    {id:'u5',name:'Technology Services',role:'crew',atts:['a2']},
+    {id:'u6',name:'Operations',role:'crew',atts:['a1','a3']}
+  ],
+  attestations: [
+    {
+      id:'a1',name:'AusPayNet Annual Security Attestation',scheme:'AusPayNet',
+      due:'2026-03-15',desc:'Annual attestation of information security controls under AusPayNet security standards.',
+      teams:['u3','u4','u6'],
+      checklist:[
+        {id:'c1',title:'Network Security Controls',desc:'Describe network segmentation, firewall rules, and perimeter security. Include last review date.',type:'both',req:true},
+        {id:'c2',title:'Privileged Access Management',desc:'Evidence of privileged access reviews in the last 90 days — user list and approval records.',type:'both',req:true},
+        {id:'c3',title:'Incident Response Testing',desc:'Confirm IR testing completion. Provide test date, scope, and outcome summary.',type:'text',req:true},
+        {id:'c4',title:'Data Encryption Standards',desc:'Confirm encryption for data at rest and in transit. Reference specific protocols (AES-256, TLS 1.2+).',type:'both',req:true},
+        {id:'c5',title:'Vulnerability Management',desc:'Most recent vulnerability scan results: date, tool, findings summary, remediation status.',type:'both',req:true}
+      ]
+    },
+    {
+      id:'a2',name:'AP+ Fraud Control Attestation',scheme:'AP+',
+      due:'2026-04-10',desc:'Quarterly fraud control attestation under AP+ PayTo scheme obligations.',
+      teams:['u4','u5'],
+      checklist:[
+        {id:'c1',title:'Fraud Monitoring Systems',desc:'Describe real-time fraud monitoring for PayTo transactions — tooling, thresholds, escalation.',type:'both',req:true},
+        {id:'c2',title:'Transaction Anomaly Thresholds',desc:'Current anomaly detection thresholds and evidence of quarterly review.',type:'both',req:true},
+        {id:'c3',title:'Customer Dispute Resolution',desc:'Quarterly stats on fraud disputes: volume and average resolution time.',type:'text',req:true},
+        {id:'c4',title:'Staff Fraud Awareness Training',desc:'Fraud awareness training completion rates for relevant staff.',type:'both',req:false}
+      ]
+    },
+    {
+      id:'a3',name:'AusPayNet BSB Directory Compliance',scheme:'AusPayNet',
+      due:'2026-05-01',desc:'Compliance attestation for BSB directory maintenance and accuracy.',
+      teams:['u3','u6'],
+      checklist:[
+        {id:'c1',title:'BSB Record Accuracy',desc:'Confirm all BSB records are accurate and current.',type:'text',req:true},
+        {id:'c2',title:'Update Process Documentation',desc:'Documentation of BSB update request process and responsible team.',type:'both',req:true},
+        {id:'c3',title:'Last Audit Date & Outcome',desc:'Date and outcome of last internal BSB directory audit.',type:'text',req:true}
+      ]
+    }
+  ],
+  submissions: [
+    {
+      id:'s1',attId:'a1',teamId:'u4',
+      at:'2026-03-03',status:'submitted',
+      responses:{
+        c1:{text:'Network is segmented into DMZ, internal, and payment processing zones. All external-facing services behind a WAF with default-deny inter-zone policy. Last firewall rule review: 15 Feb 2026 by Security Engineering — 247 rules reviewed, 12 redundant rules removed.',files:[]},
+        c2:{text:'Privileged access review conducted 20 Feb 2026. 23 accounts reviewed: 2 deprovisioned, 1 access reduced, all remaining re-certified by line managers.',files:[]},
+        c3:{text:'IR tabletop completed 10 Jan 2026 covering ransomware and data breach scenarios. Key finding: CISO escalation path was unclear — updated in IR runbook.',files:[]},
+        c4:{text:'',files:[]},
+        c5:{text:'Tenable.io scan completed 1 Mar 2026. 3 Critical — all remediated within 72hr. 12 Medium — 8 resolved, 4 in active remediation with CISO-accepted risk.',files:[]}
+      },
+      aiReview:null,manualReview:null
+    }
+  ]
+};
+
+// Pre-compute AI review for sample
+state.submissions[0].aiReview = runAI(state.submissions[0], state.attestations[0]);
+
+// ═══════════ AI REVIEW ENGINE ═══════════
+function runAI(sub, att) {
+  var itemComments = {};
+  var compPts=0, qualPts=0, shotPts=0, shotReq=0;
+  att.checklist.forEach(function(ci) {
+    var r = sub.responses[ci.id] || {text:'',files:[]};
+    var words = r.text.trim() ? r.text.trim().split(/\s+/).length : 0;
+    var hasText = words > 0;
+    var hasGood = words >= 40;
+    var hasShot = r.files.length > 0;
+    var c = [];
+
+    if (ci.req) {
+      var ok = (ci.type==='text' && hasText) || (ci.type==='screenshot' && hasShot) || (ci.type==='both' && (hasText||hasShot));
+      if (ok) compPts++;
+      else if (hasText && !hasGood) { compPts+=0.4; c.push({t:'warn',m:'Response is too brief — auditors expect specific dates, metrics, and outcomes.'}); }
+      else c.push({t:'error',m:'No response provided for this required item.'});
+    }
+
+    if (hasText) {
+      if (hasGood) qualPts++;
+      else if (words>=15) { qualPts+=0.6; c.push({t:'info',m:'Short response ('+words+' words). Consider adding more detail.'}); }
+      else { qualPts+=0.2; c.push({t:'warn',m:'Very brief ('+words+' words) — unlikely to satisfy an auditor.'}); }
+    } else if (!ci.req) {
+      c.push({t:'info',m:'Optional item — no response provided.'});
+    }
+
+    if (ci.type==='both'||ci.type==='screenshot') {
+      shotReq++;
+      if (hasShot) { shotPts++; c.push({t:'ok',m:'Screenshot uploaded. Ensure it clearly shows relevant evidence.'}); }
+      else if (ci.type==='screenshot') c.push({t:'error',m:'Screenshot required but not uploaded.'});
+      else c.push({t:'info',m:'Screenshot recommended to support the text response.'});
+    }
+    itemComments[ci.id] = c;
+  });
+
+  var reqN = att.checklist.filter(function(i){return i.req}).length || 1;
+  var comp = Math.round((compPts/reqN)*100);
+  var qual = Math.round((qualPts/att.checklist.length)*100);
+  var shot = shotReq>0 ? Math.round((shotPts/shotReq)*100) : 100;
+  var overall = Math.round(comp*0.45 + qual*0.35 + shot*0.2);
+
+  var label,color,comment;
+  if (overall>=85) { label='Excellent'; color='#16a34a'; comment='Comprehensive and well-evidenced. Recommended for manual approval.'; }
+  else if (overall>=65) { label='Good'; color='#2563eb'; comment='Largely complete with minor gaps. A few improvements recommended.'; }
+  else if (overall>=45) { label='Needs Improvement'; color='#d97706'; comment='Several items need additional evidence or more detail.'; }
+  else { label='Poor'; color='#dc2626'; comment='Significantly incomplete. Multiple required items missing.'; }
+
+  return {comp:comp,qual:qual,shot:shot,overall:overall,label:label,color:color,comment:comment,items:itemComments};
+}
+
+// ═══════════ STATUS HELPERS ═══════════
+function getAttStatus(att) {
+  var now = new Date();
+  var due = new Date(att.due);
+  var days = Math.ceil((due-now)/86400000);
+  var subs = att.teams.map(function(tid) {
+    return state.submissions.find(function(s){return s.attId===att.id && s.teamId===tid && s.status!=='draft'});
+  });
+  var submitted = subs.filter(Boolean).length;
+  var approved = subs.filter(function(s){return s&&s.status==='approved'}).length;
+  var rejected = subs.filter(function(s){return s&&s.status==='rejected'}).length;
+  var missing = att.teams.length - submitted;
+
+  if (approved===att.teams.length && att.teams.length>0) return {badge:'Complete',color:'#16a34a',bg:'#dcfce7',days:days};
+  if (days<0 && missing>0) return {badge:'Overdue',color:'#dc2626',bg:'#fee2e2',days:days};
+  if (days<=14 && missing>0) return {badge:'At Risk',color:'#dc2626',bg:'#fee2e2',days:days};
+  if (rejected>0) return {badge:'Issues',color:'#ea580c',bg:'#ffedd5',days:days};
+  if (submitted>0) return {badge:'In Progress',color:'#2563eb',bg:'#dbeafe',days:days};
+  return {badge:'Not Started',color:'#6b7280',bg:'#f3f4f6',days:days};
+}
+
+function getTeamSub(attId, teamId) {
+  return state.submissions.find(function(s){return s.attId===attId && s.teamId===teamId});
+}
+
+function fmtDate(d) { return new Date(d).toLocaleDateString('en-AU',{day:'numeric',month:'short',year:'numeric'}); }
+
+// ═══════════ RENDER ENGINE ═══════════
+function h(tag, attrs, children) {
+  var el = document.createElement(tag);
+  if (attrs) Object.keys(attrs).forEach(function(k) {
+    if (k === 'style' && typeof attrs[k] === 'object') {
+      Object.keys(attrs[k]).forEach(function(s){ el.style[s] = attrs[k][s]; });
+    } else if (k.indexOf('on')===0) {
+      el.addEventListener(k.slice(2).toLowerCase(), attrs[k]);
+    } else if (k === 'className') {
+      el.className = attrs[k];
+    } else if (k === 'value') {
+      el.value = attrs[k];
+    } else if (k === 'placeholder') {
+      el.placeholder = attrs[k];
+    } else if (k === 'type') {
+      el.type = attrs[k];
+    } else if (k === 'checked') {
+      el.checked = attrs[k];
+    } else if (k === 'htmlFor') {
+      el.htmlFor = attrs[k];
+    } else if (k === 'multiple') {
+      el.multiple = attrs[k];
+    } else if (k === 'accept') {
+      el.accept = attrs[k];
+    } else if (k === 'disabled') {
+      el.disabled = attrs[k];
+    } else if (k === 'selected') {
+      el.selected = attrs[k];
+    } else if (k === 'src') {
+      el.src = attrs[k];
+    } else {
+      el.setAttribute(k, attrs[k]);
+    }
+  });
+  if (children !== undefined && children !== null) {
+    if (Array.isArray(children)) {
+      children.forEach(function(c) {
+        if (c === null || c === undefined) return;
+        if (typeof c === 'string' || typeof c === 'number') el.appendChild(document.createTextNode(c));
+        else el.appendChild(c);
+      });
+    } else if (typeof children === 'string' || typeof children === 'number') {
+      el.appendChild(document.createTextNode(children));
+    } else {
+      el.appendChild(children);
+    }
+  }
+  return el;
+}
+
+function render() {
+  var app = document.getElementById('app');
+  app.innerHTML = '';
+  if (!state.currentUser) app.appendChild(renderLogin());
+  else app.appendChild(renderMain());
+}
+
+// ═══════════ LOGIN SCREEN ═══════════
+function renderLogin() {
+  var wrap = h('div',{style:{minHeight:'100vh',background:'linear-gradient(135deg,#2563eb,#4338ca)',display:'flex',alignItems:'center',justifyContent:'center',padding:'20px'}});
+  var card = h('div',{style:{background:'#fff',borderRadius:'20px',boxShadow:'0 20px 60px rgba(0,0,0,.2)',width:'100%',maxWidth:'420px',padding:'40px'}});
+
+  card.appendChild(h('div',{style:{textAlign:'center',marginBottom:'32px'}},[
+    h('div',{style:{fontSize:'28px',fontWeight:'800',color:'#1e293b',marginBottom:'4px'}},'🛡️ AttestHub'),
+    h('p',{style:{fontSize:'13px',color:'#94a3b8'}},'Payment Scheme Attestation Platform'),
+    h('div',{style:{display:'flex',gap:'8px',justifyContent:'center',marginTop:'8px'}},[
+      h('span',{style:{fontSize:'11px',padding:'2px 10px',borderRadius:'20px',background:'#eff6ff',color:'#2563eb',border:'1px solid #bfdbfe'}},'AusPayNet'),
+      h('span',{style:{fontSize:'11px',padding:'2px 10px',borderRadius:'20px',background:'#faf5ff',color:'#7c3aed',border:'1px solid #ddd6fe'}},'AP+')
+    ])
+  ]));
+
+  card.appendChild(h('p',{style:{fontSize:'13px',fontWeight:'600',color:'#475569',marginBottom:'12px'}},'Select your account to continue'));
+
+  state.users.forEach(function(u) {
+    var colors = {admin:'#6366f1',reviewer:'#14b8a6',crew:'#64748b'};
+    var btn = h('button',{style:{
+      width:'100%',textAlign:'left',padding:'14px 16px',borderRadius:'12px',
+      border:'1px solid #f1f5f9',background:'#fff',cursor:'pointer',
+      display:'flex',alignItems:'center',gap:'12px',marginBottom:'8px',
+      transition:'all .15s'
+    },onMouseenter:function(){this.style.borderColor='#93c5fd';this.style.background='#eff6ff'},
+      onMouseleave:function(){this.style.borderColor='#f1f5f9';this.style.background='#fff'},
+      onClick:function(){state.currentUser=u;state.view='dashboard';render();}
+    },[
+      h('div',{style:{width:'36px',height:'36px',borderRadius:'50%',background:colors[u.role],color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:'700',fontSize:'13px',flexShrink:'0'}},u.name.slice(0,2).toUpperCase()),
+      h('div',{style:{flex:'1',minWidth:'0'}},[
+        h('div',{style:{fontWeight:'600',fontSize:'14px',color:'#1e293b'}},u.name),
+        h('div',{style:{fontSize:'11px',color:'#94a3b8',textTransform:'capitalize'}},u.role)
+      ]),
+      h('span',{style:{color:'#cbd5e1',fontSize:'20px'}},'›')
+    ]);
+    card.appendChild(btn);
+  });
+
+  card.appendChild(h('p',{style:{fontSize:'11px',color:'#cbd5e1',textAlign:'center',marginTop:'16px'}},'Demo prototype — no password required'));
+  wrap.appendChild(card);
+  return wrap;
+}
+
+// ═══════════ MAIN LAYOUT ═══════════
+function renderMain() {
+  var wrap = h('div',{style:{display:'flex',height:'100vh'}});
+  wrap.appendChild(renderSidebar());
+  var main = h('div',{style:{flex:'1',overflowY:'auto',background:'#f8fafc'}});
+
+  if (state.view==='dashboard') main.appendChild(renderDashboard());
+  else if (state.view==='submit') main.appendChild(renderSubmit());
+  else if (state.view==='review') main.appendChild(renderReview());
+  else if (state.view==='admin-atts') main.appendChild(renderAdminAtts());
+  else if (state.view==='admin-users') main.appendChild(renderAdminUsers());
+
+  wrap.appendChild(main);
+  return wrap;
+}
+
+// ═══════════ SIDEBAR ═══════════
+function renderSidebar() {
+  var u = state.currentUser;
+  var adm = u.role !== 'crew';
+  var sb = h('div',{style:{width:'220px',background:'#fff',borderRight:'1px solid #f1f5f9',display:'flex',flexDirection:'column',height:'100vh',flexShrink:'0'}});
+
+  sb.appendChild(h('div',{style:{padding:'16px 20px',borderBottom:'1px solid #f1f5f9',fontWeight:'700',fontSize:'15px',color:'#1e293b'}},'🛡️ AttestHub'));
+
+  var nav = h('div',{style:{flex:'1',padding:'12px'}});
+  var items = [{id:'dashboard',label:'📊 Dashboard'}];
+  if (adm) {
+    items.push({id:'admin-atts',label:'📋 Attestations'});
+    items.push({id:'admin-users',label:'👥 Team Management'});
+  }
+  items.forEach(function(n) {
+    var active = state.view===n.id;
+    nav.appendChild(h('button',{style:{
+      width:'100%',textAlign:'left',padding:'8px 12px',borderRadius:'8px',border:'none',
+      background:active?'#eff6ff':'transparent',color:active?'#2563eb':'#64748b',
+      fontWeight:active?'600':'400',fontSize:'13px',cursor:'pointer',marginBottom:'2px',
+      transition:'all .1s'
+    },onMouseenter:function(){if(!active)this.style.background='#f8fafc'},
+      onMouseleave:function(){if(!active)this.style.background='transparent'},
+      onClick:function(){state.view=n.id;render();}
+    },n.label));
+  });
+  sb.appendChild(nav);
+
+  var colors = {admin:'#6366f1',reviewer:'#14b8a6',crew:'#64748b'};
+  var foot = h('div',{style:{padding:'12px',borderTop:'1px solid #f1f5f9'}},[
+    h('div',{style:{display:'flex',alignItems:'center',gap:'8px',padding:'6px 8px',marginBottom:'4px'}},[
+      h('div',{style:{width:'28px',height:'28px',borderRadius:'50%',background:colors[u.role],color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:'700',fontSize:'10px'}},u.name.slice(0,2).toUpperCase()),
+      h('div',{},[
+        h('div',{style:{fontSize:'12px',fontWeight:'600',color:'#1e293b'}},u.name),
+        h('div',{style:{fontSize:'10px',color:'#94a3b8',textTransform:'capitalize'}},u.role)
+      ])
+    ]),
+    h('button',{style:{width:'100%',textAlign:'left',padding:'6px 12px',borderRadius:'6px',border:'none',background:'transparent',color:'#94a3b8',fontSize:'12px',cursor:'pointer'},
+      onClick:function(){state.currentUser=null;state.view='login';render();}
+    },'↩ Sign out')
+  ]);
+  sb.appendChild(foot);
+  return sb;
+}
+
+// ═══════════ DASHBOARD ═══════════
+function renderDashboard() {
+  var u = state.currentUser;
+  var isCrew = u.role === 'crew';
+  var myAtts = state.attestations.filter(function(a){ return isCrew ? u.atts.indexOf(a.id)>=0 : true; });
+  var wrap = h('div',{style:{padding:'28px',maxWidth:'900px'}});
+
+  wrap.appendChild(h('h1',{style:{fontSize:'20px',fontWeight:'700',marginBottom:'4px'}},isCrew?'My Attestations':'Attestation Dashboard'));
+  wrap.appendChild(h('p',{style:{fontSize:'13px',color:'#64748b',marginBottom:'24px'}},isCrew?'Submit evidence for your assigned attestations.':'Overview of all active attestations.'));
+
+  // Summary cards for admin
+  if (!isCrew) {
+    var stats = h('div',{style:{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'12px',marginBottom:'24px'}});
+    var total=myAtts.length, atRisk=0, inProg=0, done=0;
+    myAtts.forEach(function(a){var s=getAttStatus(a); if(s.badge==='At Risk'||s.badge==='Overdue')atRisk++; if(s.badge==='In Progress'||s.badge==='Under Review')inProg++; if(s.badge==='Complete')done++;});
+    [{l:'Total',v:total,c:'#334155',bg:'#fff'},{l:'At Risk',v:atRisk,c:'#dc2626',bg:'#fef2f2'},{l:'In Progress',v:inProg,c:'#2563eb',bg:'#eff6ff'},{l:'Complete',v:done,c:'#16a34a',bg:'#f0fdf4'}].forEach(function(s){
+      stats.appendChild(h('div',{style:{background:s.bg,borderRadius:'12px',padding:'16px',border:'1px solid #f1f5f9'}},[
+        h('div',{style:{fontSize:'24px',fontWeight:'700',color:s.c}},String(s.v)),
+        h('div',{style:{fontSize:'13px',color:'#64748b'}},s.l)
+      ]));
+    });
+    wrap.appendChild(stats);
+  }
+
+  // Attestation cards
+  myAtts.forEach(function(att) {
+    var st = getAttStatus(att);
+    var card = h('div',{style:{background:'#fff',borderRadius:'12px',border:st.color==='#dc2626'?'1px solid #fecaca':'1px solid #f1f5f9',boxShadow:'0 1px 3px rgba(0,0,0,.04)',marginBottom:'16px',overflow:'hidden'}});
+
+    var header = h('div',{style:{padding:'20px'}});
+    var topRow = h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:'16px'}});
+
+    var left = h('div',{style:{flex:'1',minWidth:'0'}});
+    var badges = h('div',{style:{display:'flex',gap:'6px',marginBottom:'6px',flexWrap:'wrap'}});
+    var schemeC = att.scheme==='AP+'?{bg:'#faf5ff',c:'#7c3aed',b:'#ddd6fe'}:{bg:'#eff6ff',c:'#2563eb',b:'#bfdbfe'};
+    badges.appendChild(h('span',{style:{fontSize:'11px',padding:'2px 8px',borderRadius:'20px',background:schemeC.bg,color:schemeC.c,border:'1px solid '+schemeC.b}},att.scheme));
+    badges.appendChild(h('span',{style:{fontSize:'11px',padding:'2px 8px',borderRadius:'20px',background:st.bg,color:st.color,fontWeight:'600'}},st.badge));
+    left.appendChild(badges);
+    left.appendChild(h('h3',{style:{fontWeight:'600',fontSize:'14px',color:'#1e293b',marginBottom:'4px'}},att.name));
+    var dueInfo = '📅 Due '+fmtDate(att.due);
+    if (st.days>=0) dueInfo += ' · '+st.days+'d left'; else dueInfo += ' · Overdue';
+    if (!isCrew) dueInfo += ' · '+att.teams.length+' team'+(att.teams.length!==1?'s':'');
+    left.appendChild(h('p',{style:{fontSize:'11px',color:st.days<=14&&st.days>=0?'#dc2626':'#94a3b8'}},dueInfo));
+    topRow.appendChild(left);
+
+    // Crew: submit button
+    if (isCrew && att.teams.indexOf(u.id)>=0) {
+      var mySub = getTeamSub(att.id, u.id);
+      var myStatus = mySub && mySub.status!=='draft' ? mySub.status : 'not-submitted';
+      var right = h('div',{style:{display:'flex',alignItems:'center',gap:'8px',flexShrink:'0'}});
+      var stColors = {'not-submitted':{bg:'#f3f4f6',c:'#6b7280'},submitted:{bg:'#dbeafe',c:'#2563eb'},approved:{bg:'#dcfce7',c:'#16a34a'},rejected:{bg:'#fee2e2',c:'#dc2626'},partial:{bg:'#fef9c3',c:'#a16207'}};
+      var sc = stColors[myStatus]||stColors['not-submitted'];
+      right.appendChild(h('span',{style:{fontSize:'11px',padding:'3px 10px',borderRadius:'20px',background:sc.bg,color:sc.c,fontWeight:'600'}},myStatus==='not-submitted'?'Not Submitted':myStatus.charAt(0).toUpperCase()+myStatus.slice(1)));
+      var btnLabel = myStatus==='not-submitted'?'Submit':myStatus==='rejected'?'Resubmit':'View / Edit';
+      var isPrimary = myStatus==='not-submitted'||myStatus==='rejected';
+      right.appendChild(h('button',{style:{
+        padding:'6px 14px',borderRadius:'8px',border:'none',fontSize:'13px',fontWeight:'600',cursor:'pointer',
+        background:isPrimary?'#2563eb':'#f1f5f9',color:isPrimary?'#fff':'#475569'
+      },onClick:function(){state.selectedAtt=att;state.view='submit';render();}},btnLabel));
+      topRow.appendChild(right);
+    }
+    header.appendChild(topRow);
+
+    // Admin: team chips
+    if (!isCrew) {
+      var chips = h('div',{style:{display:'flex',gap:'6px',flexWrap:'wrap',marginTop:'12px'}});
+      att.teams.forEach(function(tid) {
+        var team = state.users.find(function(u){return u.id===tid});
+        var sub = getTeamSub(att.id, tid);
+        var ts = sub && sub.status!=='draft' ? sub.status : 'not-submitted';
+        var icon = {approved:'✓',rejected:'✗',partial:'◑',submitted:'⏳','not-submitted':'–'}[ts]||'–';
+        var cbg = ts==='approved'?'#f0fdf4':ts==='rejected'?'#fef2f2':(ts==='submitted'||ts==='partial')?'#eff6ff':'#f8fafc';
+        var cbr = ts==='approved'?'#bbf7d0':ts==='rejected'?'#fecaca':(ts==='submitted'||ts==='partial')?'#bfdbfe':'#e2e8f0';
+        var chip = h('div',{style:{display:'flex',alignItems:'center',gap:'6px',fontSize:'11px',padding:'4px 10px',borderRadius:'8px',background:cbg,border:'1px solid '+cbr}},[
+          h('span',{style:{fontWeight:'600',color:'#334155'}},team?team.name:tid),
+          h('span',{style:{color:ts==='approved'?'#16a34a':ts==='rejected'?'#dc2626':ts==='submitted'?'#2563eb':'#94a3b8'}},icon)
+        ]);
+        if (ts==='submitted') {
+          chip.appendChild(h('button',{style:{fontSize:'11px',color:'#2563eb',border:'none',background:'none',cursor:'pointer',textDecoration:'underline',marginLeft:'2px'},
+            onClick:function(){state.selectedAtt=att;state.selectedTeam=tid;state.view='review';render();}
+          },'Review'));
+        }
+        if (ts==='approved'||ts==='rejected'||ts==='partial') {
+          chip.appendChild(h('button',{style:{fontSize:'11px',color:'#64748b',border:'none',background:'none',cursor:'pointer',textDecoration:'underline',marginLeft:'2px'},
+            onClick:function(){state.selectedAtt=att;state.selectedTeam=tid;state.view='review';render();}
+          },'View'));
+        }
+        chips.appendChild(chip);
+      });
+      header.appendChild(chips);
+    }
+
+    card.appendChild(header);
+    wrap.appendChild(card);
+  });
+  return wrap;
+}
+
+// ═══════════ SUBMIT VIEW ═══════════
+function renderSubmit() {
+  var att = state.selectedAtt;
+  var u = state.currentUser;
+  var existingSub = getTeamSub(att.id, u.id);
+  var responses = {};
+  att.checklist.forEach(function(ci) {
+    if (existingSub && existingSub.responses && existingSub.responses[ci.id]) {
+      responses[ci.id] = {text: existingSub.responses[ci.id].text, files: existingSub.responses[ci.id].files.slice()};
+    } else {
+      responses[ci.id] = {text:'', files:[]};
+    }
+  });
+  var activeIdx = 0;
+
+  function buildView() {
+    var wrap = h('div',{style:{padding:'28px',maxWidth:'900px'}});
+    wrap.appendChild(h('button',{style:{fontSize:'13px',color:'#64748b',border:'none',background:'none',cursor:'pointer',marginBottom:'16px',padding:'0'},
+      onClick:function(){state.view='dashboard';render();}
+    },'← Back to dashboard'));
+
+    var schemeC = att.scheme==='AP+'?{bg:'#faf5ff',c:'#7c3aed',b:'#ddd6fe'}:{bg:'#eff6ff',c:'#2563eb',b:'#bfdbfe'};
+    wrap.appendChild(h('span',{style:{fontSize:'11px',padding:'2px 8px',borderRadius:'20px',background:schemeC.bg,color:schemeC.c,border:'1px solid '+schemeC.b}},att.scheme));
+    wrap.appendChild(h('h2',{style:{fontSize:'18px',fontWeight:'700',marginTop:'8px',marginBottom:'4px'}},att.name));
+
+    var answered = att.checklist.filter(function(ci){var r=responses[ci.id]; return (r.text&&r.text.trim())||r.files.length;}).length;
+    wrap.appendChild(h('p',{style:{fontSize:'13px',color:'#64748b',marginBottom:'20px'}},'Due '+fmtDate(att.due)+' · '+answered+'/'+att.checklist.length+' answered'));
+
+    var body = h('div',{style:{display:'flex',gap:'16px'}});
+
+    // Nav
+    var nav = h('div',{style:{width:'180px',flexShrink:'0'}});
+    var navCard = h('div',{style:{background:'#fff',borderRadius:'12px',border:'1px solid #f1f5f9',padding:'12px'}});
+    navCard.appendChild(h('p',{style:{fontSize:'10px',fontWeight:'700',color:'#94a3b8',letterSpacing:'0.5px',marginBottom:'8px',padding:'0 8px'}},'CHECKLIST'));
+
+    att.checklist.forEach(function(ci, i) {
+      var r = responses[ci.id];
+      var isDone = (r.text&&r.text.trim())||r.files.length;
+      var isActive = i===activeIdx;
+      navCard.appendChild(h('button',{style:{
+        width:'100%',textAlign:'left',padding:'7px 8px',borderRadius:'6px',border:'none',
+        background:isActive?'#eff6ff':'transparent',color:isActive?'#2563eb':'#475569',
+        fontWeight:isActive?'600':'400',fontSize:'11px',cursor:'pointer',marginBottom:'2px',
+        display:'flex',alignItems:'center',gap:'6px'
+      },onClick:function(){activeIdx=i;wrap.parentNode.replaceChild(buildView(),wrap);}
+      },[
+        h('span',{style:{width:'16px',height:'16px',borderRadius:'50%',background:isDone?'#16a34a':isActive?'#60a5fa':'#e2e8f0',color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:'9px',fontWeight:'700',flexShrink:'0'}},isDone?'✓':String(i+1)),
+        h('span',{style:{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:'1'}},ci.title),
+        ci.req ? h('span',{style:{color:'#f87171',flexShrink:'0'}},'*') : null
+      ]));
+    });
+    nav.appendChild(navCard);
+    body.appendChild(nav);
+
+    // Form
+    var ci = att.checklist[activeIdx];
+    var r = responses[ci.id];
+    var form = h('div',{style:{flex:'1',background:'#fff',borderRadius:'12px',border:'1px solid #f1f5f9',padding:'24px'}});
+
+    var titleRow = h('div',{style:{display:'flex',alignItems:'center',gap:'8px',marginBottom:'4px',flexWrap:'wrap'}});
+    titleRow.appendChild(h('h3',{style:{fontWeight:'600',fontSize:'15px',color:'#1e293b'}},ci.title));
+    if (ci.req) titleRow.appendChild(h('span',{style:{fontSize:'10px',background:'#fef2f2',color:'#dc2626',padding:'2px 6px',borderRadius:'4px'}},'Required'));
+    form.appendChild(titleRow);
+    form.appendChild(h('p',{style:{fontSize:'13px',color:'#64748b',marginBottom:'12px'}},ci.desc));
+
+    var evidLabels = [];
+    if (ci.type==='text'||ci.type==='both') evidLabels.push('📝 Text response');
+    if (ci.type==='screenshot'||ci.type==='both') evidLabels.push('📎 Screenshot evidence');
+    form.appendChild(h('p',{style:{fontSize:'11px',color:'#94a3b8',marginBottom:'16px'}},evidLabels.join('  ·  ')));
+
+    if (ci.type==='text'||ci.type==='both') {
+      form.appendChild(h('label',{style:{fontSize:'11px',fontWeight:'600',color:'#64748b',display:'block',marginBottom:'4px'}},'Text Response'));
+      var ta = h('textarea',{style:{
+        width:'100%',height:'140px',border:'1px solid #e2e8f0',borderRadius:'8px',padding:'12px',fontSize:'13px',
+        resize:'none',fontFamily:'inherit',outline:'none'
+      },placeholder:'Be specific — include dates, tool names, metrics, and outcomes. Responses under 40 words will be flagged.'});
+      ta.value = r.text;
+      ta.addEventListener('input',function(){r.text=this.value; var wc=r.text.trim()?r.text.trim().split(/\s+/).length:0; wcEl.textContent=wc+' words';});
+      form.appendChild(ta);
+      var wc = r.text.trim() ? r.text.trim().split(/\s+/).length : 0;
+      var wcEl = h('p',{style:{fontSize:'11px',color:'#94a3b8',marginTop:'4px',marginBottom:'16px'}},wc+' words');
+      form.appendChild(wcEl);
+    }
+
+    if (ci.type==='screenshot'||ci.type==='both') {
+      form.appendChild(h('label',{style:{fontSize:'11px',fontWeight:'600',color:'#64748b',display:'block',marginBottom:'4px'}},'Screenshots / Evidence'));
+      var fileInput = h('input',{type:'file',accept:'image/*',multiple:true,style:{display:'none'}});
+      fileInput.addEventListener('change',function(){
+        Array.from(this.files).forEach(function(f){
+          var reader = new FileReader();
+          reader.onload = function(e){ r.files.push({name:f.name,data:e.target.result}); wrap.parentNode.replaceChild(buildView(),wrap); };
+          reader.readAsDataURL(f);
+        });
+      });
+      var dropZone = h('label',{style:{
+        display:'flex',alignItems:'center',justifyContent:'center',gap:'8px',
+        border:'2px dashed #e2e8f0',borderRadius:'8px',padding:'16px',cursor:'pointer',
+        fontSize:'13px',color:'#94a3b8',transition:'all .15s'
+      },onMouseenter:function(){this.style.borderColor='#93c5fd';this.style.background='#eff6ff'},
+        onMouseleave:function(){this.style.borderColor='#e2e8f0';this.style.background='transparent'}},[
+        h('span',{},'📁 Click to upload images'),
+        fileInput
+      ]);
+      form.appendChild(dropZone);
+
+      if (r.files.length) {
+        var grid = h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'8px',marginTop:'8px'}});
+        r.files.forEach(function(f,fi){
+          var thumb = h('div',{style:{borderRadius:'8px',overflow:'hidden',border:'1px solid #e2e8f0',position:'relative'}},[
+            h('img',{src:f.data,style:{width:'100%',height:'60px',objectFit:'cover'}}),
+            h('button',{style:{position:'absolute',top:'4px',right:'4px',width:'18px',height:'18px',borderRadius:'50%',background:'#ef4444',color:'#fff',border:'none',cursor:'pointer',fontSize:'11px',display:'flex',alignItems:'center',justifyContent:'center'},
+              onClick:function(){r.files.splice(fi,1);wrap.parentNode.replaceChild(buildView(),wrap);}
+            },'×'),
+            h('p',{style:{fontSize:'9px',color:'#94a3b8',padding:'2px 4px',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}},f.name)
+          ]);
+          grid.appendChild(thumb);
+        });
+        form.appendChild(grid);
+      }
+    }
+
+    // Nav buttons + submit
+    var btns = h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:'20px',paddingTop:'16px',borderTop:'1px solid #f1f5f9'}});
+    var navBtns = h('div',{style:{display:'flex',gap:'8px'}});
+    if (activeIdx>0) navBtns.appendChild(h('button',{style:{padding:'6px 12px',fontSize:'13px',border:'1px solid #e2e8f0',borderRadius:'8px',background:'#fff',cursor:'pointer',color:'#475569'},
+      onClick:function(){activeIdx--;wrap.parentNode.replaceChild(buildView(),wrap);}
+    },'← Prev'));
+    if (activeIdx<att.checklist.length-1) navBtns.appendChild(h('button',{style:{padding:'6px 12px',fontSize:'13px',border:'1px solid #e2e8f0',borderRadius:'8px',background:'#fff',cursor:'pointer',color:'#475569'},
+      onClick:function(){activeIdx++;wrap.parentNode.replaceChild(buildView(),wrap);}
+    },'Next →'));
+    btns.appendChild(navBtns);
+    btns.appendChild(h('button',{style:{padding:'8px 20px',fontSize:'13px',fontWeight:'600',border:'none',borderRadius:'8px',background:'#2563eb',color:'#fff',cursor:'pointer'},
+      onClick:function(){
+        var existing = getTeamSub(att.id, u.id);
+        var newSub = {
+          id: existing ? existing.id : 'sub-'+Date.now(),
+          attId: att.id, teamId: u.id,
+          at: new Date().toISOString().slice(0,10),
+          status: 'submitted',
+          responses: responses,
+          aiReview: null,
+          manualReview: null
+        };
+        newSub.aiReview = runAI(newSub, att);
+        if (existing) {
+          var idx = state.submissions.indexOf(existing);
+          state.submissions[idx] = newSub;
+        } else {
+          state.submissions.push(newSub);
+        }
+        state.view='dashboard'; render();
+      }
+    },'Submit for Review'));
+    form.appendChild(btns);
+    body.appendChild(form);
+    wrap.appendChild(body);
+    return wrap;
+  }
+
+  return buildView();
+}
+
+// ═══════════ REVIEW VIEW ═══════════
+function renderReview() {
+  var att = state.selectedAtt;
+  var tid = state.selectedTeam;
+  var team = state.users.find(function(u){return u.id===tid});
+  var sub = getTeamSub(att.id, tid);
+  var wrap = h('div',{style:{padding:'28px',maxWidth:'850px'}});
+
+  wrap.appendChild(h('button',{style:{fontSize:'13px',color:'#64748b',border:'none',background:'none',cursor:'pointer',marginBottom:'16px',padding:'0'},
+    onClick:function(){state.view='dashboard';render();}
+  },'← Back to dashboard'));
+
+  if (!sub) {
+    wrap.appendChild(h('div',{style:{background:'#fff',borderRadius:'12px',border:'1px solid #f1f5f9',padding:'48px',textAlign:'center',color:'#94a3b8'}},'No submission found from '+(team?team.name:tid)+'.'));
+    return wrap;
+  }
+
+  var ai = sub.aiReview;
+  // Header
+  var hdr = h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:'20px',gap:'16px'}});
+  var hdrL = h('div',{});
+  var schemeC = att.scheme==='AP+'?{bg:'#faf5ff',c:'#7c3aed',b:'#ddd6fe'}:{bg:'#eff6ff',c:'#2563eb',b:'#bfdbfe'};
+  hdrL.appendChild(h('span',{style:{fontSize:'11px',padding:'2px 8px',borderRadius:'20px',background:schemeC.bg,color:schemeC.c,border:'1px solid '+schemeC.b}},att.scheme));
+  hdrL.appendChild(h('h2',{style:{fontSize:'18px',fontWeight:'700',marginTop:'8px',marginBottom:'4px'}},att.name));
+  hdrL.appendChild(h('p',{style:{fontSize:'13px',color:'#64748b'}},'Submitted by '+(team?team.name:tid)+' on '+fmtDate(sub.at)+' · Due '+fmtDate(att.due)));
+  hdr.appendChild(hdrL);
+  if (ai) {
+    hdr.appendChild(h('div',{style:{background:ai.color+'18',border:'1px solid '+ai.color+'40',borderRadius:'12px',padding:'12px 20px',textAlign:'center',flexShrink:'0'}},[
+      h('div',{style:{fontSize:'24px',fontWeight:'800',color:ai.color}},ai.overall+'%'),
+      h('div',{style:{fontSize:'11px',fontWeight:'600',color:ai.color}},ai.label)
+    ]));
+  }
+  wrap.appendChild(hdr);
+
+  // Tabs
+  var activeTab = 'ai';
+  var tabWrap = h('div',{style:{display:'flex',gap:'4px',background:'#f1f5f9',borderRadius:'8px',padding:'4px',width:'fit-content',marginBottom:'20px'}});
+  var contentArea = h('div',{});
+
+  function renderTab(t) {
+    activeTab = t;
+    tabWrap.querySelectorAll('button').forEach(function(b){
+      b.style.background = b.dataset.tab===t?'#fff':'transparent';
+      b.style.color = b.dataset.tab===t?'#1e293b':'#64748b';
+      b.style.boxShadow = b.dataset.tab===t?'0 1px 2px rgba(0,0,0,.05)':'none';
+    });
+    contentArea.innerHTML = '';
+    if (t==='ai') contentArea.appendChild(renderAITab());
+    else if (t==='manual') contentArea.appendChild(renderManualTab());
+    else contentArea.appendChild(renderEvidenceTab());
+  }
+
+  ['ai','manual','evidence'].forEach(function(t) {
+    var labels = {ai:'🤖 AI Review',manual:'👤 Manual Review',evidence:'📎 Evidence'};
+    tabWrap.appendChild(h('button',{style:{
+      padding:'6px 12px',fontSize:'13px',fontWeight:'500',borderRadius:'6px',border:'none',cursor:'pointer',
+      background:t===activeTab?'#fff':'transparent',color:t===activeTab?'#1e293b':'#64748b'
+    },'data-tab':t,onClick:function(){renderTab(t);}},labels[t]));
+  });
+  wrap.appendChild(tabWrap);
+
+  function renderAITab() {
+    var d = h('div',{});
+    if (!ai) { d.appendChild(h('p',{style:{color:'#94a3b8',padding:'32px',textAlign:'center'}},'No AI review available.')); return d; }
+
+    // Overall
+    var overall = h('div',{style:{background:ai.color+'10',border:'1px solid '+ai.color+'30',borderRadius:'12px',padding:'20px',marginBottom:'16px'}});
+    overall.appendChild(h('p',{style:{fontWeight:'600',color:'#1e293b',marginBottom:'4px',fontSize:'14px'}},'AI Overall Assessment'));
+    overall.appendChild(h('p',{style:{fontSize:'13px',color:'#475569',marginBottom:'16px'}},ai.comment));
+
+    var bars = h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'16px'}});
+    [{l:'Completeness',v:ai.comp},{l:'Quality',v:ai.qual},{l:'Screenshots',v:ai.shot}].forEach(function(b){
+      var col = h('div',{});
+      col.appendChild(h('div',{style:{display:'flex',justifyContent:'space-between',fontSize:'11px',marginBottom:'4px'}},[
+        h('span',{style:{color:'#475569'}},b.l),
+        h('span',{style:{fontWeight:'600',color:'#1e293b'}},b.v+'%')
+      ]));
+      var track = h('div',{style:{height:'6px',background:'rgba(255,255,255,.6)',borderRadius:'99px',overflow:'hidden'}});
+      track.appendChild(h('div',{style:{height:'100%',width:b.v+'%',background:ai.color,borderRadius:'99px'}}));
+      col.appendChild(track);
+      bars.appendChild(col);
+    });
+    overall.appendChild(bars);
+    d.appendChild(overall);
+
+    // Item comments
+    var itemsCard = h('div',{style:{background:'#fff',borderRadius:'12px',border:'1px solid #f1f5f9',overflow:'hidden'}});
+    itemsCard.appendChild(h('p',{style:{padding:'12px 16px',fontSize:'10px',fontWeight:'700',color:'#94a3b8',letterSpacing:'0.5px',borderBottom:'1px solid #f8fafc'}},'ITEM-LEVEL COMMENTS'));
+    att.checklist.forEach(function(ci){
+      var comments = ai.items[ci.id] || [];
+      var r = sub.responses[ci.id];
+      var row = h('div',{style:{padding:'12px 16px',borderBottom:'1px solid #f8fafc'}});
+      var rowH = h('div',{style:{display:'flex',alignItems:'center',gap:'6px',marginBottom:'6px',flexWrap:'wrap'}});
+      rowH.appendChild(h('span',{style:{fontSize:'12px',fontWeight:'600',color:'#334155'}},ci.title));
+      if (ci.req) rowH.appendChild(h('span',{style:{fontSize:'10px',background:'#fef2f2',color:'#dc2626',padding:'1px 5px',borderRadius:'3px'}},'Required'));
+      if (r && r.text && r.text.trim()) rowH.appendChild(h('span',{style:{fontSize:'10px',background:'#f0fdf4',color:'#16a34a',padding:'1px 5px',borderRadius:'3px',marginLeft:'auto'}},'Has response'));
+      row.appendChild(rowH);
+      if (comments.length) {
+        comments.forEach(function(c){
+          var icon = c.t==='error'?'✗':c.t==='warn'?'⚠':c.t==='ok'?'✓':'ℹ';
+          var color = c.t==='error'?'#dc2626':c.t==='warn'?'#ea580c':c.t==='ok'?'#16a34a':'#64748b';
+          row.appendChild(h('p',{style:{fontSize:'12px',color:color,display:'flex',gap:'6px',alignItems:'flex-start',marginTop:'3px'}},[
+            h('span',{style:{flexShrink:'0'}},icon),
+            h('span',{},c.m)
+          ]));
+        });
+      } else {
+        row.appendChild(h('p',{style:{fontSize:'12px',color:'#16a34a'}},'✓ No issues flagged'));
+      }
+      itemsCard.appendChild(row);
+    });
+    d.appendChild(itemsCard);
+    return d;
+  }
+
+  function renderManualTab() {
+    var d = h('div',{});
+    var decision = sub.manualReview ? sub.manualReview.status : 'approved';
+    var commentText = sub.manualReview ? sub.manualReview.comments : '';
+
+    var card = h('div',{style:{background:'#fff',borderRadius:'12px',border:'1px solid #f1f5f9',padding:'20px',marginBottom:'16px'}});
+    card.appendChild(h('p',{style:{fontWeight:'600',color:'#1e293b',marginBottom:'12px',fontSize:'14px'}},'Overall Decision'));
+
+    var btns = h('div',{style:{display:'flex',gap:'8px',marginBottom:'16px'}});
+    [{v:'approved',l:'✓ Approve',bc:'#16a34a',bg:'#f0fdf4',c:'#16a34a'},
+     {v:'partial',l:'◑ Partial Approve',bc:'#eab308',bg:'#fefce8',c:'#a16207'},
+     {v:'rejected',l:'✗ Reject & Return',bc:'#dc2626',bg:'#fef2f2',c:'#dc2626'}].forEach(function(o){
+      btns.appendChild(h('button',{style:{
+        flex:'1',padding:'10px',fontSize:'13px',fontWeight:'600',borderRadius:'8px',cursor:'pointer',
+        border:'2px solid '+(decision===o.v?o.bc:'#e2e8f0'),
+        background:decision===o.v?o.bg:'#fff',
+        color:decision===o.v?o.c:'#64748b'
+      },onClick:function(){decision=o.v;d.parentNode.replaceChild(renderManualTab(),d);}},o.l));
+    });
+    card.appendChild(btns);
+
+    card.appendChild(h('label',{style:{fontSize:'11px',fontWeight:'600',color:'#64748b',display:'block',marginBottom:'4px'}},'Comments to team'));
+    var ta = h('textarea',{style:{width:'100%',height:'100px',border:'1px solid #e2e8f0',borderRadius:'8px',padding:'12px',fontSize:'13px',resize:'none',fontFamily:'inherit',outline:'none'},
+      placeholder:'Provide clear feedback — what was done well, what needs improving, any required next steps.'});
+    ta.value = commentText;
+    ta.addEventListener('input',function(){commentText=this.value;});
+    card.appendChild(ta);
+    d.appendChild(card);
+
+    d.appendChild(h('div',{style:{display:'flex',justifyContent:'flex-end'}},[
+      h('button',{style:{padding:'10px 24px',fontSize:'13px',fontWeight:'600',border:'none',borderRadius:'8px',background:'#2563eb',color:'#fff',cursor:'pointer'},
+        onClick:function(){
+          sub.status = decision;
+          sub.manualReview = {status:decision,comments:commentText,by:state.currentUser.name,at:new Date().toISOString().slice(0,10)};
+          state.view='dashboard'; render();
+        }
+      },'Save Review & Notify Team')
+    ]));
+    return d;
+  }
+
+  function renderEvidenceTab() {
+    var d = h('div',{});
+    att.checklist.forEach(function(ci) {
+      var r = sub.responses[ci.id] || {text:'',files:[]};
+      var hasText = r.text && r.text.trim();
+      var hasFiles = r.files && r.files.length;
+      var card = h('div',{style:{background:'#fff',borderRadius:'12px',border:'1px solid #f1f5f9',padding:'16px',marginBottom:'12px'}});
+      var hd = h('div',{style:{display:'flex',alignItems:'center',gap:'6px',marginBottom:'8px',flexWrap:'wrap'}});
+      hd.appendChild(h('span',{style:{fontWeight:'600',fontSize:'14px',color:'#1e293b'}},ci.title));
+      if (ci.req) hd.appendChild(h('span',{style:{fontSize:'10px',background:'#fef2f2',color:'#dc2626',padding:'1px 5px',borderRadius:'3px'}},'Required'));
+      if (!hasText && !hasFiles) hd.appendChild(h('span',{style:{fontSize:'10px',background:'#fff7ed',color:'#ea580c',padding:'1px 5px',borderRadius:'3px',marginLeft:'auto'}},'No response'));
+      card.appendChild(hd);
+      if (hasText) {
+        var tb = h('div',{style:{background:'#f8fafc',borderRadius:'8px',padding:'12px',marginBottom:'8px'}});
+        tb.appendChild(h('p',{style:{fontSize:'10px',fontWeight:'700',color:'#94a3b8',marginBottom:'4px'}},'TEXT RESPONSE'));
+        tb.appendChild(h('p',{style:{fontSize:'13px',color:'#334155',whiteSpace:'pre-wrap'}},r.text));
+        card.appendChild(tb);
+      }
+      if (hasFiles) {
+        card.appendChild(h('p',{style:{fontSize:'10px',fontWeight:'700',color:'#94a3b8',marginBottom:'6px'}},'SCREENSHOTS ('+r.files.length+')'));
+        var grid = h('div',{style:{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'8px'}});
+        r.files.forEach(function(f){
+          grid.appendChild(h('div',{style:{borderRadius:'8px',overflow:'hidden',border:'1px solid #e2e8f0'}},[
+            h('img',{src:f.data,style:{width:'100%',height:'60px',objectFit:'cover'}}),
+            h('p',{style:{fontSize:'9px',color:'#94a3b8',padding:'2px 4px',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}},f.name)
+          ]));
+        });
+        card.appendChild(grid);
+      }
+      d.appendChild(card);
+    });
+    return d;
+  }
+
+  renderTab('ai');
+  wrap.appendChild(contentArea);
+  return wrap;
+}
+
+// ═══════════ ADMIN ATTESTATIONS ═══════════
+function renderAdminAtts() {
+  var wrap = h('div',{style:{padding:'28px',maxWidth:'850px'}});
+  wrap.appendChild(h('h1',{style:{fontSize:'20px',fontWeight:'700',marginBottom:'4px'}},'Attestation Manager'));
+  wrap.appendChild(h('p',{style:{fontSize:'13px',color:'#64748b',marginBottom:'24px'}},'Create attestations, build checklists, and assign teams'));
+
+  state.attestations.forEach(function(att) {
+    var card = h('div',{style:{background:'#fff',borderRadius:'12px',border:'1px solid #f1f5f9',padding:'16px',marginBottom:'12px'}});
+    var schemeC = att.scheme==='AP+'?{bg:'#faf5ff',c:'#7c3aed',b:'#ddd6fe'}:{bg:'#eff6ff',c:'#2563eb',b:'#bfdbfe'};
+    card.appendChild(h('span',{style:{fontSize:'11px',padding:'2px 8px',borderRadius:'20px',background:schemeC.bg,color:schemeC.c,border:'1px solid '+schemeC.b}},att.scheme));
+    card.appendChild(h('p',{style:{fontWeight:'600',fontSize:'14px',color:'#1e293b',marginTop:'6px'}},att.name));
+    card.appendChild(h('p',{style:{fontSize:'11px',color:'#94a3b8'}},'Due '+fmtDate(att.due)+' · '+att.checklist.length+' checklist items · '+att.teams.length+' teams'));
+
+    var details = h('div',{style:{marginTop:'12px',paddingTop:'12px',borderTop:'1px solid #f1f5f9'}});
+    details.appendChild(h('p',{style:{fontSize:'10px',fontWeight:'700',color:'#94a3b8',letterSpacing:'0.5px',marginBottom:'8px'}},'CHECKLIST'));
+    att.checklist.forEach(function(ci,i){
+      details.appendChild(h('div',{style:{display:'flex',alignItems:'center',gap:'8px',fontSize:'12px',padding:'4px 0',color:'#475569'}},[
+        h('span',{style:{width:'18px',height:'18px',borderRadius:'50%',background:'#e2e8f0',color:'#64748b',display:'flex',alignItems:'center',justifyContent:'center',fontSize:'9px',flexShrink:'0'}},String(i+1)),
+        h('span',{style:{fontWeight:'500'}},ci.title),
+        ci.req?h('span',{style:{color:'#f87171'}},'*'):null,
+        h('span',{style:{color:'#cbd5e1',marginLeft:'auto',fontSize:'10px',textTransform:'capitalize'}},ci.type)
+      ]));
+    });
+    card.appendChild(details);
+
+    var teamSec = h('div',{style:{marginTop:'12px',paddingTop:'12px',borderTop:'1px solid #f1f5f9'}});
+    teamSec.appendChild(h('p',{style:{fontSize:'10px',fontWeight:'700',color:'#94a3b8',letterSpacing:'0.5px',marginBottom:'6px'}},'ASSIGNED TEAMS'));
+    var teamNames = att.teams.map(function(tid){var u=state.users.find(function(u){return u.id===tid}); return u?u.name:tid;}).join(', ');
+    teamSec.appendChild(h('p',{style:{fontSize:'12px',color:'#475569'}},teamNames || 'None'));
+    card.appendChild(teamSec);
+
+    wrap.appendChild(card);
+  });
+  return wrap;
+}
+
+// ═══════════ ADMIN USERS ═══════════
+function renderAdminUsers() {
+  var wrap = h('div',{style:{padding:'28px',maxWidth:'700px'}});
+  wrap.appendChild(h('h1',{style:{fontSize:'20px',fontWeight:'700',marginBottom:'4px'}},'Team Management'));
+  wrap.appendChild(h('p',{style:{fontSize:'13px',color:'#64748b',marginBottom:'24px'}},'Manage users and attestation assignments'));
+
+  state.users.forEach(function(u) {
+    var colors = {admin:'#6366f1',reviewer:'#14b8a6',crew:'#64748b'};
+    var card = h('div',{style:{background:'#fff',borderRadius:'12px',border:'1px solid #f1f5f9',padding:'14px 16px',marginBottom:'8px',display:'flex',alignItems:'center',gap:'12px'}});
+    card.appendChild(h('div',{style:{width:'32px',height:'32px',borderRadius:'50%',background:colors[u.role],color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:'700',fontSize:'11px',flexShrink:'0'}},u.name.slice(0,2).toUpperCase()));
+    card.appendChild(h('div',{style:{flex:'1',minWidth:'0'}},[
+      h('div',{style:{fontWeight:'600',fontSize:'13px',color:'#1e293b'}},u.name),
+      h('div',{style:{fontSize:'11px',color:'#94a3b8',textTransform:'capitalize'}},u.role+' · '+u.atts.length+' attestation(s)')
+    ]));
+    wrap.appendChild(card);
+  });
+  return wrap;
+}
+
+// Boot
+render();
+</script>
+</body>
+</html>
