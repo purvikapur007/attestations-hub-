@@ -132,19 +132,27 @@ function initState() {
     state.submissions.forEach(function(s) {
       if (!s.aiReview) {
         var att = state.attestations.find(function(a){ return a.id === s.attId; });
-        if (att) s.aiReview = runAI(s, att);
+        if (att) s.aiReview = runAI(s, att, s.teamId);
       }
     });
   } else {
-    state.submissions[0].aiReview = runAI(state.submissions[0], state.attestations[0]);
+    state.submissions[0].aiReview = runAI(state.submissions[0], state.attestations[0], state.submissions[0].teamId);
   }
 }
 
 // ═══════════ AI REVIEW ENGINE ═══════════
-function runAI(sub, att) {
+function teamChecklist(att, teamId) {
+  if (!teamId) return att.checklist;
+  return att.checklist.filter(function(ci) {
+    return !ci.teams || ci.teams.length===0 || ci.teams.indexOf(teamId)>=0;
+  });
+}
+
+function runAI(sub, att, teamId) {
+  var checklist = teamChecklist(att, teamId);
   var itemComments = {};
   var compPts=0, qualPts=0, shotPts=0, shotReq=0;
-  att.checklist.forEach(function(ci) {
+  checklist.forEach(function(ci) {
     var r = sub.responses[ci.id] || {text:'',files:[]};
     var words = r.text.trim() ? r.text.trim().split(/\s+/).length : 0;
     var hasText = words > 0;
@@ -176,9 +184,9 @@ function runAI(sub, att) {
     itemComments[ci.id] = c;
   });
 
-  var reqN = att.checklist.filter(function(i){return i.req}).length || 1;
+  var reqN = checklist.filter(function(i){return i.req}).length || 1;
   var comp = Math.round((compPts/reqN)*100);
-  var qual = Math.round((qualPts/att.checklist.length)*100);
+  var qual = Math.round((qualPts/checklist.length)*100);
   var shot = shotReq>0 ? Math.round((shotPts/shotReq)*100) : 100;
   var overall = Math.round(comp*0.45 + qual*0.35 + shot*0.2);
 
@@ -721,8 +729,10 @@ function renderSubmit() {
   var att = state.selectedAtt;
   var u = state.currentUser;
   var existingSub = getTeamSub(att.id, u.id);
+  // Only show questions assigned to this team (empty teams = all teams)
+  var myChecklist = teamChecklist(att, u.id);
   var responses = {};
-  att.checklist.forEach(function(ci) {
+  myChecklist.forEach(function(ci) {
     if (existingSub && existingSub.responses && existingSub.responses[ci.id]) {
       responses[ci.id] = {text: existingSub.responses[ci.id].text, files: existingSub.responses[ci.id].files.slice(), subChecks: existingSub.responses[ci.id].subChecks||{}};
     } else {
@@ -741,17 +751,17 @@ function renderSubmit() {
     wrap.appendChild(h('span',{style:{fontSize:'11px',padding:'2px 8px',borderRadius:'20px',background:schemeC.bg,color:schemeC.c,border:'1px solid '+schemeC.b}},att.scheme));
     wrap.appendChild(h('h2',{style:{fontSize:'18px',fontWeight:'700',marginTop:'8px',marginBottom:'4px'}},att.name));
 
-    var answered = att.checklist.filter(function(ci){var r=responses[ci.id]; return (r.text&&r.text.trim())||r.files.length;}).length;
-    wrap.appendChild(h('p',{style:{fontSize:'13px',color:'#64748b',marginBottom:'20px'}},'Due '+fmtDate(att.due)+' · '+answered+'/'+att.checklist.length+' answered'));
+    var answered = myChecklist.filter(function(ci){var r=responses[ci.id]; return (r.text&&r.text.trim())||r.files.length;}).length;
+    wrap.appendChild(h('p',{style:{fontSize:'13px',color:'#64748b',marginBottom:'20px'}},'Due '+fmtDate(att.due)+' · '+answered+'/'+myChecklist.length+' answered'+(myChecklist.length<att.checklist.length?' ('+myChecklist.length+' of '+att.checklist.length+' questions assigned to you)':'')));
 
     var body = h('div',{style:{display:'flex',gap:'16px'}});
 
     // Nav
     var nav = h('div',{style:{width:'180px',flexShrink:'0'}});
     var navCard = h('div',{style:{background:'#fff',borderRadius:'12px',border:'1px solid #f1f5f9',padding:'12px'}});
-    navCard.appendChild(h('p',{style:{fontSize:'10px',fontWeight:'700',color:'#94a3b8',letterSpacing:'0.5px',marginBottom:'8px',padding:'0 8px'}},'CHECKLIST'));
+    navCard.appendChild(h('p',{style:{fontSize:'10px',fontWeight:'700',color:'#94a3b8',letterSpacing:'0.5px',marginBottom:'8px',padding:'0 8px'}},'MY QUESTIONS'));
 
-    att.checklist.forEach(function(ci, i) {
+    myChecklist.forEach(function(ci, i) {
       var r = responses[ci.id];
       var isDone = (r.text&&r.text.trim())||r.files.length;
       var isActive = i===activeIdx;
@@ -771,7 +781,7 @@ function renderSubmit() {
     body.appendChild(nav);
 
     // Form
-    var ci = att.checklist[activeIdx];
+    var ci = myChecklist[activeIdx];
     var r = responses[ci.id];
     var form = h('div',{style:{flex:'1',background:'#fff',borderRadius:'12px',border:'1px solid #f1f5f9',padding:'24px'}});
 
@@ -853,13 +863,42 @@ function renderSubmit() {
       }
     }
 
+    // Change history for this question
+    var qHistory = [];
+    if (existingSub && existingSub.versions) {
+      existingSub.versions.slice().reverse().forEach(function(v) {
+        (v.changes||[]).forEach(function(ch) {
+          if (ch.ciId === ci.id) qHistory.push({by:v.savedBy, at:v.savedAt, field:ch.field, from:ch.from, to:ch.to});
+        });
+      });
+    }
+    if (qHistory.length > 0) {
+      var histBox = h('div',{style:{marginTop:'16px',borderTop:'1px solid #f1f5f9',paddingTop:'12px'}});
+      var histHdr = h('div',{style:{display:'flex',alignItems:'center',gap:'6px',marginBottom:'8px'}});
+      histHdr.appendChild(h('span',{style:{fontSize:'10px',fontWeight:'700',color:'#94a3b8',letterSpacing:'0.5px'}},'CHANGE HISTORY'));
+      histHdr.appendChild(h('span',{style:{fontSize:'10px',padding:'1px 6px',borderRadius:'10px',background:'#f1f5f9',color:'#64748b'}},qHistory.length+' change'+(qHistory.length!==1?'s':'')));
+      histBox.appendChild(histHdr);
+      qHistory.slice(0,3).forEach(function(ch) {
+        var row = h('div',{style:{display:'flex',alignItems:'flex-start',gap:'8px',fontSize:'11px',color:'#64748b',marginBottom:'6px',padding:'6px 8px',background:'#f8fafc',borderRadius:'6px'}});
+        row.appendChild(h('span',{style:{fontSize:'13px',flexShrink:'0'}},'✏️'));
+        var info = h('div',{style:{flex:'1',minWidth:'0'}});
+        info.appendChild(h('div',{style:{fontWeight:'600',color:'#475569'}},ch.by+' · '+fmtDateTime(ch.at)));
+        info.appendChild(h('div',{style:{color:'#94a3b8',marginTop:'1px'}},ch.field));
+        row.appendChild(info);
+        histBox.appendChild(row);
+      });
+      if (qHistory.length > 3) histBox.appendChild(h('div',{style:{fontSize:'10px',color:'#94a3b8',padding:'0 8px'}},'+' +(qHistory.length-3)+' earlier change'+(qHistory.length-3!==1?'s':'')));
+      histBox.appendChild(h('div',{style:{marginTop:'6px'}}));
+      form.appendChild(histBox);
+    }
+
     // Nav buttons + submit
     var btns = h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:'20px',paddingTop:'16px',borderTop:'1px solid #f1f5f9'}});
     var navBtns = h('div',{style:{display:'flex',gap:'8px'}});
     if (activeIdx>0) navBtns.appendChild(h('button',{style:{padding:'6px 12px',fontSize:'13px',border:'1px solid #e2e8f0',borderRadius:'8px',background:'#fff',cursor:'pointer',color:'#475569'},
       onClick:function(){activeIdx--;wrap.parentNode.replaceChild(buildView(),wrap);}
     },'← Prev'));
-    if (activeIdx<att.checklist.length-1) navBtns.appendChild(h('button',{style:{padding:'6px 12px',fontSize:'13px',border:'1px solid #e2e8f0',borderRadius:'8px',background:'#fff',cursor:'pointer',color:'#475569'},
+    if (activeIdx<myChecklist.length-1) navBtns.appendChild(h('button',{style:{padding:'6px 12px',fontSize:'13px',border:'1px solid #e2e8f0',borderRadius:'8px',background:'#fff',cursor:'pointer',color:'#475569'},
       onClick:function(){activeIdx++;wrap.parentNode.replaceChild(buildView(),wrap);}
     },'Next →'));
     btns.appendChild(navBtns);
@@ -877,7 +916,7 @@ function renderSubmit() {
           manualReview: existing ? existing.manualReview : null,
           versions: (existing ? (existing.versions||[]) : []).concat([versionEntry])
         };
-        newSub.aiReview = runAI(newSub, att);
+        newSub.aiReview = runAI(newSub, att, u.id);
         if (existing) {
           var idx = state.submissions.indexOf(existing);
           state.submissions[idx] = newSub;
@@ -915,10 +954,12 @@ function renderReview() {
   }
 
   var ai = sub.aiReview;
+  // Questions assigned to this team
+  var reviewChecklist = teamChecklist(att, tid);
 
   // Per-question review state — lives in renderReview closure so it survives tab switches
   var itemReviews = {};
-  att.checklist.forEach(function(ci) {
+  reviewChecklist.forEach(function(ci) {
     var ex = sub.manualReview && sub.manualReview.items && sub.manualReview.items[ci.id];
     itemReviews[ci.id] = {status: ex ? ex.status : 'pending', comments: ex ? (ex.comments||'') : ''};
   });
@@ -1006,7 +1047,7 @@ function renderReview() {
     // Item comments
     var itemsCard = h('div',{style:{background:'#fff',borderRadius:'12px',border:'1px solid #f1f5f9',overflow:'hidden'}});
     itemsCard.appendChild(h('p',{style:{padding:'12px 16px',fontSize:'10px',fontWeight:'700',color:'#94a3b8',letterSpacing:'0.5px',borderBottom:'1px solid #f8fafc'}},'ITEM-LEVEL COMMENTS'));
-    att.checklist.forEach(function(ci){
+    reviewChecklist.forEach(function(ci){
       var comments = ai.items[ci.id] || [];
       var r = sub.responses[ci.id];
       var row = h('div',{style:{padding:'12px 16px',borderBottom:'1px solid #f8fafc'}});
@@ -1037,11 +1078,11 @@ function renderReview() {
     var d = h('div',{});
 
     // Progress banner
-    var total = att.checklist.length;
-    var reviewed = att.checklist.filter(function(ci){return itemReviews[ci.id].status!=='pending';}).length;
-    var approved = att.checklist.filter(function(ci){return itemReviews[ci.id].status==='approved';}).length;
-    var rejected = att.checklist.filter(function(ci){return itemReviews[ci.id].status==='rejected';}).length;
-    var needsWork = att.checklist.filter(function(ci){return itemReviews[ci.id].status==='needs-work';}).length;
+    var total = reviewChecklist.length;
+    var reviewed = reviewChecklist.filter(function(ci){return itemReviews[ci.id].status!=='pending';}).length;
+    var approved = reviewChecklist.filter(function(ci){return itemReviews[ci.id].status==='approved';}).length;
+    var rejected = reviewChecklist.filter(function(ci){return itemReviews[ci.id].status==='rejected';}).length;
+    var needsWork = reviewChecklist.filter(function(ci){return itemReviews[ci.id].status==='needs-work';}).length;
 
     var progressBar = h('div',{style:{background:'#fff',borderRadius:'12px',border:'1px solid #f1f5f9',padding:'14px 18px',marginBottom:'16px',display:'flex',alignItems:'center',gap:'16px',flexWrap:'wrap'}});
     progressBar.appendChild(h('div',{style:{flex:'1',minWidth:'180px'}},[
@@ -1060,7 +1101,7 @@ function renderReview() {
     d.appendChild(progressBar);
 
     // Per-question cards
-    att.checklist.forEach(function(ci, idx) {
+    reviewChecklist.forEach(function(ci, idx) {
       var r = sub.responses[ci.id] || {text:'',files:[],subChecks:{}};
       var ir = itemReviews[ci.id];
       var statusColors = {
@@ -1134,7 +1175,7 @@ function renderReview() {
 
     // Save footer
     var footer = h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 0',marginTop:'4px'}});
-    var pendingCount = att.checklist.filter(function(ci){return itemReviews[ci.id].status==='pending';}).length;
+    var pendingCount = reviewChecklist.filter(function(ci){return itemReviews[ci.id].status==='pending';}).length;
     if (pendingCount>0) {
       footer.appendChild(h('span',{style:{fontSize:'12px',color:'#94a3b8'}},pendingCount+' question'+(pendingCount!==1?'s':'')+' not yet reviewed'));
     } else {
@@ -1142,7 +1183,7 @@ function renderReview() {
     }
     footer.appendChild(h('button',{style:{padding:'10px 24px',fontSize:'13px',fontWeight:'700',border:'none',borderRadius:'8px',background:'#FFD000',color:'#1A1A1A',cursor:'pointer'},
       onClick:function(){
-        var statuses = att.checklist.map(function(ci){return itemReviews[ci.id].status;});
+        var statuses = reviewChecklist.map(function(ci){return itemReviews[ci.id].status;});
         var overall = statuses.every(function(s){return s==='approved';}) ? 'approved' :
                       statuses.some(function(s){return s==='rejected';}) ? 'rejected' : 'partial';
         sub.status = overall;
@@ -1161,7 +1202,7 @@ function renderReview() {
 
   function renderEvidenceTab() {
     var d = h('div',{});
-    att.checklist.forEach(function(ci) {
+    reviewChecklist.forEach(function(ci) {
       var r = sub.responses[ci.id] || {text:'',files:[]};
       var hasText = r.text && r.text.trim();
       var hasFiles = r.files && r.files.length;
@@ -1663,6 +1704,34 @@ function renderAdminAtts() {
       reqLbl.appendChild(document.createTextNode('Required'));
       rowBot.appendChild(reqLbl);
       row.appendChild(rowBot);
+      // Team assignment section
+      if (state.newAtt.teams.length > 0) {
+        if (!item.teams) item.teams = [];
+        var teamSec = h('div',{style:{borderTop:'1px solid #f1f5f9',marginTop:'10px',paddingTop:'10px'}});
+        teamSec.appendChild(h('p',{style:{fontSize:'10px',fontWeight:'700',color:'#1A1A1A',letterSpacing:'0.5px',marginBottom:'2px'}},'ASSIGN TO TEAMS'));
+        teamSec.appendChild(h('p',{style:{fontSize:'10px',color:'#64748b',marginBottom:'6px'}},'Select which teams answer this question. Leave blank to assign to all teams.'));
+        var cbWrap = h('div',{style:{display:'flex',flexWrap:'wrap',gap:'8px'}});
+        state.newAtt.teams.forEach(function(uid){
+          var tu = state.users.find(function(u){return u.id===uid;});
+          if (!tu) return;
+          var tcLbl = h('label',{style:{display:'flex',alignItems:'center',gap:'4px',fontSize:'11px',color:'#1A1A1A',cursor:'pointer',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:'6px',padding:'4px 8px'}});
+          var tcCb = h('input',{type:'checkbox'});
+          tcCb.checked = item.teams.indexOf(uid) >= 0;
+          tcCb.addEventListener('change',(function(iIdx,userId){return function(){
+            if (!state.newAtt.checklist[iIdx].teams) state.newAtt.checklist[iIdx].teams=[];
+            if (this.checked){
+              if (state.newAtt.checklist[iIdx].teams.indexOf(userId)<0) state.newAtt.checklist[iIdx].teams.push(userId);
+            } else {
+              state.newAtt.checklist[iIdx].teams=state.newAtt.checklist[iIdx].teams.filter(function(t){return t!==userId;});
+            }
+          };})(i,uid));
+          tcLbl.appendChild(tcCb);
+          tcLbl.appendChild(document.createTextNode(tu.name));
+          cbWrap.appendChild(tcLbl);
+        });
+        teamSec.appendChild(cbWrap);
+        row.appendChild(teamSec);
+      }
       // Sub-items section
       if (!item.subItems) item.subItems = [];
       var subSec = h('div',{style:{borderTop:'1px solid #e2e8f0',marginTop:'10px',paddingTop:'10px'}});
@@ -1701,7 +1770,7 @@ function renderAdminAtts() {
             due:state.newAtt.due,
             desc:state.newAtt.desc.trim(),
             teams:state.newAtt.teams.slice(),
-            checklist:state.newAtt.checklist.map(function(item){return {id:item.id,title:item.title,desc:item.desc,type:item.type,req:item.req,subItems:(item.subItems||[]).map(function(si){return {id:si.id,text:si.text};})};})
+            checklist:state.newAtt.checklist.map(function(item){return {id:item.id,title:item.title,desc:item.desc,type:item.type,req:item.req,teams:item.teams||[],subItems:(item.subItems||[]).map(function(si){return {id:si.id,text:si.text};})};})
           };
           state.attestations.push(newAtt);
           state.newAtt.teams.forEach(function(uid){
