@@ -546,6 +546,45 @@ function renderDashboard() {
     vizRow.appendChild(barCard);
     wrap.appendChild(vizRow);
 
+    // Non-compliance trend (from risk reports)
+    var allRRs = [];
+    myAtts.forEach(function(a){(a.riskReports||[]).forEach(function(rr){allRRs.push({year:rr.year,nc:rr.nonComplianceCount,attName:a.name});});});
+    if (allRRs.length > 0) {
+      var trendCard = h('div',{style:{background:'#fff',borderRadius:'12px',border:'1px solid #f1f5f9',padding:'20px',marginBottom:'16px'}});
+      trendCard.appendChild(h('p',{style:{fontSize:'11px',fontWeight:'700',color:'#94a3b8',letterSpacing:'0.5px',marginBottom:'12px'}},'NON-COMPLIANCE TREND (RISK REPORTS)'));
+      var byYear = {};
+      allRRs.forEach(function(r){if(!byYear[r.year])byYear[r.year]=0; byYear[r.year]+=r.nc;});
+      var years = Object.keys(byYear).sort();
+      var trendRow = h('div',{style:{display:'flex',gap:'8px',alignItems:'flex-end',flexWrap:'wrap'}});
+      var maxNc = Math.max.apply(null,years.map(function(y){return byYear[y];})) || 1;
+      years.forEach(function(yr,yi){
+        var nc = byYear[yr];
+        var barPct = Math.round((nc/maxNc)*80)+20;
+        var ncCol = nc===0?'#16a34a':nc<=3?'#d97706':'#dc2626';
+        var col = h('div',{style:{display:'flex',flexDirection:'column',alignItems:'center',gap:'4px',minWidth:'60px'}});
+        col.appendChild(h('div',{style:{fontSize:'13px',fontWeight:'700',color:ncCol}},String(nc)));
+        var bar = h('div',{style:{width:'32px',background:ncCol+'40',borderRadius:'4px',overflow:'hidden',height:'48px',display:'flex',alignItems:'flex-end'}});
+        bar.appendChild(h('div',{style:{width:'100%',height:barPct+'%',background:ncCol,borderRadius:'4px'}}));
+        col.appendChild(bar);
+        col.appendChild(h('div',{style:{fontSize:'10px',color:'#64748b',fontWeight:'600'}},String(yr)));
+        if (yi>0){var prev=byYear[years[yi-1]]; var diff=nc-prev; col.appendChild(h('div',{style:{fontSize:'9px',color:diff<0?'#16a34a':diff>0?'#dc2626':'#94a3b8',fontWeight:'700'}},diff<0?'▼'+Math.abs(diff):diff>0?'▲'+diff:'—'));}
+        trendRow.appendChild(col);
+      });
+      trendCard.appendChild(trendRow);
+      // Detail table
+      var detTbl = h('div',{style:{marginTop:'12px',borderTop:'1px solid #f1f5f9',paddingTop:'10px'}});
+      detTbl.appendChild(h('p',{style:{fontSize:'10px',color:'#94a3b8',marginBottom:'6px'}},'BY ATTESTATION'));
+      allRRs.sort(function(a,b){return b.year-a.year;}).forEach(function(r){
+        var nc2Col = r.nc===0?'#16a34a':r.nc<=3?'#d97706':'#dc2626';
+        detTbl.appendChild(h('div',{style:{display:'flex',justifyContent:'space-between',fontSize:'11px',color:'#475569',padding:'4px 0',borderBottom:'1px solid #f8fafc'}},[
+          h('span',{},''+r.year+' — '+r.attName),
+          h('span',{style:{fontWeight:'700',color:nc2Col}},r.nc+' non-compliance')
+        ]));
+      });
+      trendCard.appendChild(detTbl);
+      wrap.appendChild(trendCard);
+    }
+
     // Scheme breakdown row
     var ausN = myAtts.filter(function(a){return a.scheme==='AusPayNet';}).length;
     var apN = myAtts.filter(function(a){return a.scheme==='AP+';}).length;
@@ -902,7 +941,31 @@ function renderSubmit() {
       onClick:function(){activeIdx++;wrap.parentNode.replaceChild(buildView(),wrap);}
     },'Next →'));
     btns.appendChild(navBtns);
-    btns.appendChild(h('button',{style:{padding:'8px 20px',fontSize:'13px',fontWeight:'600',border:'none',borderRadius:'8px',background:'#FFD000',color:'#1A1A1A',cursor:'pointer'},
+    var actionBtns = h('div',{style:{display:'flex',gap:'8px'}});
+    actionBtns.appendChild(h('button',{style:{padding:'8px 16px',fontSize:'13px',fontWeight:'600',border:'1px solid #e2e8f0',borderRadius:'8px',background:'#fff',color:'#475569',cursor:'pointer'},
+      onClick:function(){
+        var existing = getTeamSub(att.id, u.id);
+        var newSub = {
+          id: existing ? existing.id : 'sub-'+Date.now(),
+          attId: att.id, teamId: u.id,
+          at: new Date().toISOString().slice(0,10),
+          status: 'draft',
+          responses: responses,
+          aiReview: existing ? existing.aiReview : null,
+          manualReview: existing ? existing.manualReview : null,
+          versions: existing ? (existing.versions||[]) : []
+        };
+        if (existing) {
+          var idx = state.submissions.indexOf(existing);
+          state.submissions[idx] = newSub;
+        } else {
+          state.submissions.push(newSub);
+        }
+        saveSubmissions();
+        state.view='dashboard'; render();
+      }
+    },'Save & Exit'));
+    actionBtns.appendChild(h('button',{style:{padding:'8px 20px',fontSize:'13px',fontWeight:'600',border:'none',borderRadius:'8px',background:'#FFD000',color:'#1A1A1A',cursor:'pointer'},
       onClick:function(){
         var existing = getTeamSub(att.id, u.id);
         var versionEntry = createVersionEntry(existing, responses, att, u);
@@ -927,6 +990,7 @@ function renderSubmit() {
         state.view='dashboard'; render();
       }
     },'Submit for Review'));
+    btns.appendChild(actionBtns);
     form.appendChild(btns);
     body.appendChild(form);
     wrap.appendChild(body);
@@ -991,6 +1055,83 @@ function renderReview() {
   }
   hdr.appendChild(hdrR);
   wrap.appendChild(hdr);
+
+  // Risk Report section (admin/reviewer only)
+  if (state.currentUser.role==='admin'||state.currentUser.role==='reviewer') {
+    if (!att.riskReports) att.riskReports = [];
+    var rrWrap = h('div',{style:{background:'#fff',borderRadius:'12px',border:'1px solid #f1f5f9',padding:'16px 20px',marginBottom:'20px'}});
+    var rrHdr = h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:att.riskReports.length?'12px':'0'}});
+    rrHdr.appendChild(h('div',{style:{display:'flex',alignItems:'center',gap:'8px'}}, [
+      h('span',{style:{fontSize:'11px',fontWeight:'700',color:'#94a3b8',letterSpacing:'0.5px'}},'📊 RISK REPORTS'),
+      h('span',{style:{fontSize:'11px',padding:'1px 7px',borderRadius:'10px',background:'#f1f5f9',color:'#64748b'}},att.riskReports.length+' uploaded')
+    ]));
+    var showUploadForm = false;
+    var rrFormArea = h('div',{});
+    var toggleBtn = h('button',{style:{fontSize:'11px',fontWeight:'600',padding:'4px 10px',border:'1px solid #FFD000',borderRadius:'6px',background:'#FFFDE7',color:'#7A5F00',cursor:'pointer'}}, '+ Upload Report');
+    toggleBtn.addEventListener('click',function(){
+      showUploadForm = !showUploadForm;
+      toggleBtn.textContent = showUploadForm ? '✕ Cancel' : '+ Upload Report';
+      rrFormArea.innerHTML = '';
+      if (showUploadForm) {
+        var rrForm = h('div',{style:{background:'#f8fafc',borderRadius:'8px',padding:'14px',marginTop:'12px',border:'1px solid #e2e8f0'}});
+        rrForm.appendChild(h('p',{style:{fontSize:'11px',fontWeight:'700',color:'#64748b',marginBottom:'10px'}},'NEW RISK REPORT'));
+        var rrRow1 = h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px',marginBottom:'10px'}});
+        var yearIn = h('div',{});
+        yearIn.appendChild(h('label',{style:{fontSize:'11px',color:'#64748b',display:'block',marginBottom:'3px'}},'Year'));
+        var yearEl = h('input',{type:'number',min:'2000',max:'2099',style:{width:'100%',border:'1px solid #e2e8f0',borderRadius:'6px',padding:'6px 8px',fontSize:'12px'},placeholder:new Date().getFullYear()});
+        yearEl.value = new Date().getFullYear();
+        yearIn.appendChild(yearEl);
+        rrRow1.appendChild(yearIn);
+        var ncIn = h('div',{});
+        ncIn.appendChild(h('label',{style:{fontSize:'11px',color:'#64748b',display:'block',marginBottom:'3px'}},'Non-Compliance Items'));
+        var ncEl = h('input',{type:'number',min:'0',style:{width:'100%',border:'1px solid #e2e8f0',borderRadius:'6px',padding:'6px 8px',fontSize:'12px'},placeholder:'0'});
+        ncIn.appendChild(ncEl);
+        rrRow1.appendChild(ncIn);
+        rrForm.appendChild(rrRow1);
+        rrForm.appendChild(h('label',{style:{fontSize:'11px',color:'#64748b',display:'block',marginBottom:'3px'}},'Recommendations & Summary'));
+        var recEl = h('textarea',{style:{width:'100%',height:'80px',border:'1px solid #e2e8f0',borderRadius:'6px',padding:'8px',fontSize:'12px',resize:'none',fontFamily:'inherit'},placeholder:'Summarise Risk findings and recommendations…'});
+        rrForm.appendChild(recEl);
+        rrForm.appendChild(h('div',{style:{display:'flex',justifyContent:'flex-end',marginTop:'10px'}},[
+          h('button',{style:{padding:'7px 18px',fontSize:'12px',fontWeight:'700',border:'none',borderRadius:'8px',background:'#FFD000',color:'#1A1A1A',cursor:'pointer'},
+            onClick:function(){
+              var year = parseInt(yearEl.value)||new Date().getFullYear();
+              var nc = parseInt(ncEl.value)||0;
+              var rec = recEl.value.trim();
+              if (!rec) { alert('Please enter recommendations/summary.'); return; }
+              att.riskReports.push({id:'rr-'+Date.now(),year:year,nonComplianceCount:nc,recommendations:rec,uploadedBy:state.currentUser.name,uploadedAt:new Date().toISOString().slice(0,10)});
+              saveAttestations();
+              state.selectedAtt = att;
+              state.view='review'; render();
+            }
+          },'Save Risk Report')
+        ]));
+        rrFormArea.appendChild(rrForm);
+      }
+    });
+    rrHdr.appendChild(toggleBtn);
+    rrWrap.appendChild(rrHdr);
+    // Existing reports
+    if (att.riskReports.length > 0) {
+      var rrList = h('div',{style:{display:'flex',flexDirection:'column',gap:'8px'}});
+      att.riskReports.slice().sort(function(a,b){return b.year-a.year;}).forEach(function(rr){
+        var rrItem = h('div',{style:{display:'flex',alignItems:'flex-start',gap:'12px',background:'#f8fafc',borderRadius:'8px',padding:'10px 14px',border:'1px solid #e2e8f0'}});
+        var ncColor = rr.nonComplianceCount===0?'#16a34a':rr.nonComplianceCount<=3?'#d97706':'#dc2626';
+        rrItem.appendChild(h('div',{style:{textAlign:'center',minWidth:'48px'}}, [
+          h('div',{style:{fontSize:'20px',fontWeight:'800',color:ncColor}},String(rr.nonComplianceCount)),
+          h('div',{style:{fontSize:'9px',color:'#94a3b8',fontWeight:'600'}},'NON-COMP')
+        ]));
+        var rrMid = h('div',{style:{flex:'1',minWidth:'0'}});
+        rrMid.appendChild(h('div',{style:{fontSize:'12px',fontWeight:'700',color:'#1e293b',marginBottom:'2px'}},'Risk Report — '+rr.year));
+        rrMid.appendChild(h('div',{style:{fontSize:'11px',color:'#475569',marginBottom:'3px'}},rr.recommendations));
+        rrMid.appendChild(h('div',{style:{fontSize:'10px',color:'#94a3b8'}},'Uploaded by '+rr.uploadedBy+' on '+fmtDate(rr.uploadedAt)));
+        rrItem.appendChild(rrMid);
+        rrList.appendChild(rrItem);
+      });
+      rrWrap.appendChild(rrList);
+    }
+    rrWrap.appendChild(rrFormArea);
+    wrap.appendChild(rrWrap);
+  }
 
   // Tabs
   var activeTab = 'ai';
@@ -1160,12 +1301,15 @@ function renderReview() {
       });
       qCard.appendChild(decRow);
 
-      // Comment field
-      var commentLabel = h('label',{style:{fontSize:'11px',fontWeight:'600',color:'#64748b',display:'block',marginBottom:'4px'}},'Reviewer comment (optional)');
+      // Comment field — required when a decision has been made
+      var commentRequired = ir.status !== 'pending';
+      var commentLabel = h('label',{style:{fontSize:'11px',fontWeight:'600',color:'#64748b',display:'block',marginBottom:'4px'}},
+        'Reviewer comment'+(commentRequired?' *':' (select a decision first)'));
       var ta = h('textarea',{style:{
-        width:'100%',height:'64px',border:'1px solid #e2e8f0',borderRadius:'6px',padding:'8px 10px',
+        width:'100%',height:'64px',border:'1px solid '+(commentRequired&&!ir.comments.trim()?'#fca5a5':'#e2e8f0'),borderRadius:'6px',padding:'8px 10px',
         fontSize:'12px',resize:'none',fontFamily:'inherit',outline:'none',background:'rgba(255,255,255,0.8)'
-      },placeholder:'Note what needs to change, or confirm why this is approved…'});
+      },placeholder:commentRequired?'Required — explain your decision…':'Make a decision above before adding a comment…'});
+      ta.disabled = !commentRequired;
       ta.value = ir.comments;
       ta.addEventListener('input',function(){itemReviews[ci.id].comments=this.value;});
       qCard.appendChild(commentLabel);
@@ -1181,8 +1325,31 @@ function renderReview() {
     } else {
       footer.appendChild(h('span',{style:{fontSize:'12px',color:'#16a34a',fontWeight:'600'}},'✓ All questions reviewed'));
     }
+    // Save & Exit (partial — saves whatever is done so far)
+    footer.appendChild(h('button',{style:{padding:'10px 20px',fontSize:'13px',fontWeight:'600',border:'1px solid #e2e8f0',borderRadius:'8px',background:'#fff',color:'#475569',cursor:'pointer'},
+      onClick:function(){
+        var missingComment = reviewChecklist.filter(function(ci){return itemReviews[ci.id].status!=='pending' && !itemReviews[ci.id].comments.trim();});
+        if (missingComment.length>0) {
+          alert('Comments are required for reviewed questions. Please add a comment for: '+missingComment.map(function(ci){return '"'+ci.title+'"';}).join(', '));
+          return;
+        }
+        sub.manualReview = {
+          items: JSON.parse(JSON.stringify(itemReviews)),
+          by: state.currentUser.name,
+          at: new Date().toISOString().slice(0,10)
+        };
+        saveSubmissions();
+        state.view='dashboard'; render();
+      }
+    },'Save & Exit'));
     footer.appendChild(h('button',{style:{padding:'10px 24px',fontSize:'13px',fontWeight:'700',border:'none',borderRadius:'8px',background:'#FFD000',color:'#1A1A1A',cursor:'pointer'},
       onClick:function(){
+        if (pendingCount>0) { alert(pendingCount+' question'+(pendingCount!==1?'s':'')+' still pending review. Please review all questions or use "Save & Exit" to save partial progress.'); return; }
+        var missingComment = reviewChecklist.filter(function(ci){return !itemReviews[ci.id].comments.trim();});
+        if (missingComment.length>0) {
+          alert('Comments are required for all reviewed questions. Missing for: '+missingComment.map(function(ci){return '"'+ci.title+'"';}).join(', '));
+          return;
+        }
         var statuses = reviewChecklist.map(function(ci){return itemReviews[ci.id].status;});
         var overall = statuses.every(function(s){return s==='approved';}) ? 'approved' :
                       statuses.some(function(s){return s==='rejected';}) ? 'rejected' : 'partial';
@@ -1440,12 +1607,42 @@ function exportFinalAttestationDoc(att) {
         });
         subListHtml += '</div>';
       }
-      qRows += '<tr style="border-bottom:1px solid #f1f5f9;vertical-align:top"><td style="padding:12px 14px;width:36px;color:#94a3b8;font-size:11px;font-weight:700">'+(idx+1)+'</td><td style="padding:12px 14px;width:200px"><strong style="font-size:12px;color:#1e293b">'+escHtml(ci.title)+'</strong>'+(ci.req?'<span style="font-size:9px;background:#fef2f2;color:#dc2626;padding:1px 4px;border-radius:3px;margin-left:4px">Req</span>':'')+'<div style="font-size:10px;color:#94a3b8;margin-top:3px">'+escHtml(ci.desc)+'</div></td><td style="padding:12px 14px">'+subListHtml+(r.text?'<div style="font-size:12px;color:#334155;white-space:pre-wrap">'+escHtml(r.text)+'</div>':'<em style="font-size:11px;color:#94a3b8">No response</em>')+(r.files&&r.files.length?'<div style="font-size:10px;color:#64748b;margin-top:4px">'+r.files.length+' file(s) uploaded</div>':'')+qrHtml+'</td></tr>';
+      // Per-question stage
+      var qStage, qStageColor, qStageBg;
+      if (qReview && qReview.status && qReview.status!=='pending') {
+        qStage = qReview.status==='approved'?'Completed':qReview.status==='rejected'?'Rejected':'Needs Work';
+        qStageColor = qReview.status==='approved'?'#16a34a':qReview.status==='rejected'?'#dc2626':'#a16207';
+        qStageBg = qReview.status==='approved'?'#f0fdf4':qReview.status==='rejected'?'#fef2f2':'#fefce8';
+      } else if (r.text&&r.text.trim()||r.files&&r.files.length) {
+        qStage = 'Under Review'; qStageColor = '#7A5F00'; qStageBg = '#FFFDE7';
+      } else {
+        qStage = 'Not Started'; qStageColor = '#94a3b8'; qStageBg = '#f3f4f6';
+      }
+      qRows += '<tr style="border-bottom:1px solid #f1f5f9;vertical-align:top"><td style="padding:12px 14px;width:36px;color:#94a3b8;font-size:11px;font-weight:700">'+(idx+1)+'</td><td style="padding:12px 14px;width:200px"><strong style="font-size:12px;color:#1e293b">'+escHtml(ci.title)+'</strong>'+(ci.req?'<span style="font-size:9px;background:#fef2f2;color:#dc2626;padding:1px 4px;border-radius:3px;margin-left:4px">Req</span>':'')+'<div style="font-size:10px;color:#94a3b8;margin-top:3px">'+escHtml(ci.desc)+'</div><span style="display:inline-block;margin-top:6px;font-size:9px;font-weight:700;padding:2px 6px;border-radius:10px;background:'+qStageBg+';color:'+qStageColor+'">'+qStage+'</span></td><td style="padding:12px 14px">'+subListHtml+(r.text?'<div style="font-size:12px;color:#334155;white-space:pre-wrap">'+escHtml(r.text)+'</div>':'<em style="font-size:11px;color:#94a3b8">No response</em>')+(r.files&&r.files.length?'<div style="font-size:10px;color:#64748b;margin-top:4px">'+r.files.length+' file(s) uploaded</div>':'')+qrHtml+'</td></tr>';
     });
 
     var reviewerLine = mr ? '<div style="font-size:11px;color:#64748b;margin-top:10px">Reviewed by <strong>'+escHtml(mr.by)+'</strong> on '+fmtDate(mr.at)+' &nbsp;·&nbsp; Overall: <strong style="color:'+tsColor+'">'+ts.toUpperCase()+'</strong></div>' : '';
 
-    teamSections += '<div style="background:#fff;border-radius:10px;border:2px solid '+tsBg+';padding:20px;margin-bottom:24px"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid #f1f5f9"><h3 style="font-size:15px;font-weight:700;color:#1e293b;margin:0">'+escHtml(teamName)+'</h3><div style="display:flex;align-items:center;gap:8px"><span style="font-size:10px;color:#64748b">Submitted '+fmtDate(sub.at)+'</span><span style="font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px;background:'+tsBg+';color:'+tsColor+'">'+ts.toUpperCase()+'</span></div></div>'+aiBar+'<table style="width:100%;border-collapse:collapse">'+qRows+'</table>'+reviewerLine+'</div>';
+    // Stage summary for this team
+    var stageSummary = (function(){
+      var counts = {completed:0,rejected:0,needsWork:0,underReview:0,notStarted:0};
+      att.checklist.forEach(function(ci){
+        var r2 = sub.responses[ci.id]||{text:'',files:[]};
+        var qr2 = mr && mr.items && mr.items[ci.id];
+        if (qr2&&qr2.status&&qr2.status!=='pending'){if(qr2.status==='approved')counts.completed++;else if(qr2.status==='rejected')counts.rejected++;else counts.needsWork++;}
+        else if(r2.text&&r2.text.trim()||r2.files&&r2.files.length) counts.underReview++;
+        else counts.notStarted++;
+      });
+      var pills = [
+        counts.completed?'<span style="font-size:9px;font-weight:700;padding:2px 7px;border-radius:10px;background:#f0fdf4;color:#16a34a">'+counts.completed+' Completed</span>':'',
+        counts.underReview?'<span style="font-size:9px;font-weight:700;padding:2px 7px;border-radius:10px;background:#FFFDE7;color:#7A5F00">'+counts.underReview+' Under Review</span>':'',
+        counts.needsWork?'<span style="font-size:9px;font-weight:700;padding:2px 7px;border-radius:10px;background:#fefce8;color:#a16207">'+counts.needsWork+' Needs Work</span>':'',
+        counts.rejected?'<span style="font-size:9px;font-weight:700;padding:2px 7px;border-radius:10px;background:#fef2f2;color:#dc2626">'+counts.rejected+' Rejected</span>':'',
+        counts.notStarted?'<span style="font-size:9px;font-weight:700;padding:2px 7px;border-radius:10px;background:#f3f4f6;color:#94a3b8">'+counts.notStarted+' Not Started</span>':''
+      ].filter(Boolean).join(' ');
+      return pills ? '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px">'+pills+'</div>' : '';
+    })();
+    teamSections += '<div style="background:#fff;border-radius:10px;border:2px solid '+tsBg+';padding:20px;margin-bottom:24px"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid #f1f5f9"><h3 style="font-size:15px;font-weight:700;color:#1e293b;margin:0">'+escHtml(teamName)+'</h3><div style="display:flex;align-items:center;gap:8px"><span style="font-size:10px;color:#64748b">Submitted '+fmtDate(sub.at)+'</span><span style="font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px;background:'+tsBg+';color:'+tsColor+'">'+ts.toUpperCase()+'</span></div></div>'+aiBar+stageSummary+'<table style="width:100%;border-collapse:collapse">'+qRows+'</table>'+reviewerLine+'</div>';
   });
 
   var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>'+escHtml(att.name)+' — Final Attestation Document</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#f5f7fa;color:#1e293b;margin:0;padding:0}@media print{body{background:#fff}.no-print{display:none}}</style></head><body>'
@@ -1463,6 +1660,16 @@ function exportFinalAttestationDoc(att) {
     +'<span>📋 Questions: <strong>'+att.checklist.length+'</strong></span>'
     +'<span>Status: <strong style="color:'+attStatus.color+'">'+attStatus.badge+'</strong></span>'
     +'</div></div>'
+    +(function(){
+      var rrs = att.riskReports||[];
+      if (!rrs.length) return '';
+      var sorted = rrs.slice().sort(function(a,b){return b.year-a.year;});
+      var rrRows = sorted.map(function(rr){
+        var nc2C = rr.nonComplianceCount===0?'#16a34a':rr.nonComplianceCount<=3?'#d97706':'#dc2626';
+        return '<tr style="border-bottom:1px solid #f1f5f9"><td style="padding:10px 14px;font-size:12px;font-weight:700;color:#1e293b">'+rr.year+'</td><td style="padding:10px 14px"><span style="font-size:14px;font-weight:800;color:'+nc2C+'">'+rr.nonComplianceCount+'</span><span style="font-size:10px;color:#94a3b8;margin-left:4px">items</span></td><td style="padding:10px 14px;font-size:12px;color:#475569">'+escHtml(rr.recommendations)+'</td><td style="padding:10px 14px;font-size:11px;color:#94a3b8">'+escHtml(rr.uploadedBy)+' · '+fmtDate(rr.uploadedAt)+'</td></tr>';
+      }).join('');
+      return '<div style="background:#fff;border-radius:12px;border:1px solid #f1f5f9;padding:20px;margin-bottom:24px"><h2 style="font-size:13px;font-weight:700;color:#94a3b8;letter-spacing:0.5px;margin:0 0 12px">📊 RISK REPORTS</h2><table style="width:100%;border-collapse:collapse"><thead><tr style="background:#f8fafc"><th style="padding:8px 14px;text-align:left;font-size:10px;color:#94a3b8">YEAR</th><th style="padding:8px 14px;text-align:left;font-size:10px;color:#94a3b8">NON-COMPLIANCE</th><th style="padding:8px 14px;text-align:left;font-size:10px;color:#94a3b8">RECOMMENDATIONS</th><th style="padding:8px 14px;text-align:left;font-size:10px;color:#94a3b8">UPLOADED BY</th></tr></thead><tbody>'+rrRows+'</tbody></table></div>';
+    })()
     +'<h2 style="font-size:14px;font-weight:700;color:#94a3b8;letter-spacing:0.5px;margin:0 0 16px">TEAM SUBMISSIONS</h2>'
     +teamSections
     +'</div></body></html>';
