@@ -256,9 +256,25 @@ function getAttStatus(att) {
 
   if (approved===att.teams.length && att.teams.length>0) return {badge:'Complete',color:'#16a34a',bg:'#dcfce7',days:days};
   if (days<0 && missing>0) return {badge:'Overdue',color:'#dc2626',bg:'#fee2e2',days:days};
+
+  // Per-item due date check
+  var itemOverdue=false, itemAtRisk=false;
+  att.checklist.forEach(function(ci){
+    if (!ci.due) return;
+    var ciDays = Math.ceil((new Date(ci.due)-new Date())/86400000);
+    var allDone = att.teams.length>0 && att.teams.every(function(tid){
+      var sub2=state.submissions.find(function(s){return s.attId===att.id&&s.teamId===tid&&s.status!=='draft';});
+      var r=sub2&&sub2.responses&&sub2.responses[ci.id];
+      return r&&((r.text&&r.text.trim())||(r.files&&r.files.length));
+    });
+    if (!allDone){if(ciDays<0)itemOverdue=true; else if(ciDays<=7)itemAtRisk=true;}
+  });
+  if (itemOverdue) return {badge:'Item Overdue',color:'#dc2626',bg:'#fee2e2',days:days};
+
   if (days<=14 && missing>0) return {badge:'At Risk',color:'#dc2626',bg:'#fee2e2',days:days};
   if (rejected>0) return {badge:'Issues',color:'#ea580c',bg:'#ffedd5',days:days};
   if (submitted>0) return {badge:'In Progress',color:'#7A5F00',bg:'#FFF9C4',days:days};
+  if (itemAtRisk) return {badge:'Item At Risk',color:'#ea580c',bg:'#ffedd5',days:days};
   return {badge:'Not Started',color:'#6b7280',bg:'#f3f4f6',days:days};
 }
 
@@ -598,17 +614,51 @@ function renderDashboard() {
   // Attestation cards
   myAtts.forEach(function(att) {
     var st = getAttStatus(att);
-    var card = h('div',{style:{background:'#fff',borderRadius:'12px',border:st.color==='#dc2626'?'1px solid #fecaca':'1px solid #f1f5f9',boxShadow:'0 1px 3px rgba(0,0,0,.04)',marginBottom:'16px',overflow:'hidden'}});
+    var card = h('div',{style:{background:'#fff',borderRadius:'12px',border:st.color==='#dc2626'?'1px solid #fecaca':'1px solid #f1f5f9',boxShadow:'0 1px 3px rgba(0,0,0,.04)',marginBottom:'16px',overflow:'visible'}});
 
     var header = h('div',{style:{padding:'20px'}});
     var topRow = h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:'16px'}});
 
     var left = h('div',{style:{flex:'1',minWidth:'0'}});
-    var badges = h('div',{style:{display:'flex',gap:'6px',marginBottom:'6px',flexWrap:'wrap'}});
     var schemeC = att.scheme==='AP+'?{bg:'#faf5ff',c:'#7c3aed',b:'#ddd6fe'}:{bg:'#eff6ff',c:'#2563eb',b:'#bfdbfe'};
-    badges.appendChild(h('span',{style:{fontSize:'11px',padding:'2px 8px',borderRadius:'20px',background:schemeC.bg,color:schemeC.c,border:'1px solid '+schemeC.b}},att.scheme));
-    badges.appendChild(h('span',{style:{fontSize:'11px',padding:'2px 8px',borderRadius:'20px',background:st.bg,color:st.color,fontWeight:'600'}},st.badge));
-    left.appendChild(badges);
+    // Badge row with hover tooltip for per-item due dates
+    var badgeWrap = h('div',{style:{position:'relative',display:'inline-flex',gap:'6px',marginBottom:'6px',flexWrap:'wrap',alignItems:'center'}});
+    badgeWrap.appendChild(h('span',{style:{fontSize:'11px',padding:'2px 8px',borderRadius:'20px',background:schemeC.bg,color:schemeC.c,border:'1px solid '+schemeC.b}},att.scheme));
+    badgeWrap.appendChild(h('span',{style:{fontSize:'11px',padding:'2px 8px',borderRadius:'20px',background:st.bg,color:st.color,fontWeight:'600',cursor:'default'}},st.badge));
+    if (!isCrew) {
+      badgeWrap.appendChild(h('span',{style:{fontSize:'11px',color:'#cbd5e1',cursor:'default'}},'ⓘ'));
+      var tooltip = h('div',{style:{
+        position:'absolute',top:'calc(100% + 6px)',left:'0',zIndex:'100',
+        background:'#fff',border:'1px solid #e2e8f0',borderRadius:'10px',
+        padding:'12px 14px',minWidth:'300px',boxShadow:'0 4px 16px rgba(0,0,0,.12)',
+        display:'none',pointerEvents:'none'
+      }});
+      tooltip.appendChild(h('p',{style:{fontSize:'10px',fontWeight:'700',color:'#94a3b8',letterSpacing:'0.5px',marginBottom:'8px'}},'ITEM TIMELINE'));
+      att.checklist.forEach(function(ci){
+        var effDue = ci.due || att.due;
+        var ciDays = Math.ceil((new Date(effDue)-new Date())/86400000);
+        var isCustom = !!ci.due;
+        var responded = att.teams.filter(function(tid){
+          var sub2=state.submissions.find(function(s){return s.attId===att.id&&s.teamId===tid&&s.status!=='draft';});
+          var r=sub2&&sub2.responses&&sub2.responses[ci.id];
+          return r&&((r.text&&r.text.trim())||(r.files&&r.files.length));
+        }).length;
+        var ciColor = ciDays<0?'#dc2626':ciDays<=7?'#ea580c':'#16a34a';
+        var ciRow = h('div',{style:{display:'flex',alignItems:'center',gap:'8px',padding:'5px 0',borderBottom:'1px solid #f8fafc'}});
+        ciRow.appendChild(h('span',{style:{width:'7px',height:'7px',borderRadius:'50%',background:ciColor,flexShrink:'0'}}));
+        ciRow.appendChild(h('span',{style:{fontSize:'12px',color:'#334155',flex:'1',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},ci.title+(isCustom?' ·':'')));
+        ciRow.appendChild(h('span',{style:{fontSize:'10px',color:ciColor,fontWeight:'600',whiteSpace:'nowrap',flexShrink:'0'}},fmtDate(effDue)+(ciDays<0?' ⚠':ciDays<=7?' ⚡':'')));
+        if (att.teams.length>0) ciRow.appendChild(h('span',{style:{fontSize:'10px',color:'#94a3b8',flexShrink:'0'}},responded+'/'+att.teams.length));
+        tooltip.appendChild(ciRow);
+      });
+      if (att.checklist.some(function(ci){return !!ci.due;})) {
+        tooltip.appendChild(h('p',{style:{fontSize:'10px',color:'#94a3b8',marginTop:'6px'}},'· = custom item due date'));
+      }
+      badgeWrap.appendChild(tooltip);
+      badgeWrap.addEventListener('mouseenter',function(){tooltip.style.display='block';});
+      badgeWrap.addEventListener('mouseleave',function(){tooltip.style.display='none';});
+    }
+    left.appendChild(badgeWrap);
     left.appendChild(h('h3',{style:{fontWeight:'600',fontSize:'14px',color:'#1e293b',marginBottom:'4px'}},att.name));
     var dueInfo = '📅 Due '+fmtDate(att.due);
     if (st.days>=0) dueInfo += ' · '+st.days+'d left'; else dueInfo += ' · Overdue';
@@ -813,7 +863,12 @@ function renderSubmit() {
       },[
         h('span',{style:{width:'16px',height:'16px',borderRadius:'50%',background:isDone?'#16a34a':isActive?'#FFD000':'#e2e8f0',color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:'9px',fontWeight:'700',flexShrink:'0'}},isDone?'✓':String(i+1)),
         h('span',{style:{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:'1'}},ci.title),
-        ci.req ? h('span',{style:{color:'#f87171',flexShrink:'0'}},'*') : null
+        ci.req ? h('span',{style:{color:'#f87171',flexShrink:'0'}},'*') : null,
+        ci.due ? (function(){
+          var ciDays=Math.ceil((new Date(ci.due)-new Date())/86400000);
+          var c=ciDays<0?'#dc2626':ciDays<=7?'#ea580c':'#94a3b8';
+          return h('span',{style:{fontSize:'9px',color:c,flexShrink:'0',whiteSpace:'nowrap'}},ciDays<0?'⚠ Overdue':fmtDate(ci.due));
+        })() : null
       ]));
     });
     nav.appendChild(navCard);
@@ -1870,7 +1925,7 @@ function renderAdminAtts() {
         if (!srcAtt) return;
         var ts = Date.now();
         state.newAtt.checklist = srcAtt.checklist.map(function(ci,idx){
-          return {id:'c-'+ts+'-'+idx,title:ci.title,desc:ci.desc,type:ci.type,req:ci.req,subItems:(ci.subItems||[]).map(function(si,si_i){return {id:'si-'+ts+'-'+idx+'-'+si_i,text:si.text};})};
+          return {id:'c-'+ts+'-'+idx,title:ci.title,desc:ci.desc,type:ci.type,req:ci.req,due:ci.due||'',subItems:(ci.subItems||[]).map(function(si,si_i){return {id:'si-'+ts+'-'+idx+'-'+si_i,text:si.text};})};
         });
         state.copyFromAttId='';
         render();
@@ -1894,6 +1949,14 @@ function renderAdminAtts() {
       descEl2.value = item.desc;
       descEl2.addEventListener('input',function(){state.newAtt.checklist[i].desc=this.value;});
       row.appendChild(descEl2);
+      var dueDateRow = h('div',{style:{display:'flex',alignItems:'center',gap:'8px',marginBottom:'8px',flexWrap:'wrap'}});
+      dueDateRow.appendChild(h('label',{style:{fontSize:'11px',color:'#64748b',whiteSpace:'nowrap'}},'Item due date (optional)'));
+      var dueDateIn = h('input',{type:'date',style:Object.assign({},inputStyle,{width:'auto',flex:'1',minWidth:'140px'})});
+      dueDateIn.value = item.due || '';
+      dueDateIn.addEventListener('change',(function(iIdx){return function(){state.newAtt.checklist[iIdx].due=this.value||'';};})(i));
+      dueDateRow.appendChild(dueDateIn);
+      dueDateRow.appendChild(h('span',{style:{fontSize:'11px',color:'#94a3b8'}},'Leave blank to use attestation due date'));
+      row.appendChild(dueDateRow);
       var rowBot = h('div',{style:{display:'flex',gap:'12px',alignItems:'center'}});
       var typeEl = h('select',{style:Object.assign({},inputStyle,{width:'auto',flex:'1'})});
       [{v:'both',l:'Text + Screenshot'},{v:'text',l:'Text only'},{v:'screenshot',l:'Screenshot only'}].forEach(function(o){
@@ -1977,7 +2040,7 @@ function renderAdminAtts() {
             due:state.newAtt.due,
             desc:state.newAtt.desc.trim(),
             teams:state.newAtt.teams.slice(),
-            checklist:state.newAtt.checklist.map(function(item){return {id:item.id,title:item.title,desc:item.desc,type:item.type,req:item.req,teams:item.teams||[],subItems:(item.subItems||[]).map(function(si){return {id:si.id,text:si.text};})};})
+            checklist:state.newAtt.checklist.map(function(item){return {id:item.id,title:item.title,desc:item.desc,type:item.type,req:item.req,due:item.due||'',teams:item.teams||[],subItems:(item.subItems||[]).map(function(si){return {id:si.id,text:si.text};})};})
           };
           state.attestations.push(newAtt);
           state.newAtt.teams.forEach(function(uid){
