@@ -21,10 +21,8 @@ var state = {
   reviewSource: 'dashboard',
   historyFilter: 'all',
   showCreateAtt: false,
-  showCreateUser: false,
   newAtt: {name:'',scheme:'AusPayNet',due:'',desc:'',teams:[],checklist:[]},
   newTeamName: '',
-  newUser: {name:'',role:'crew',atts:[]},
   copyFromAttId: '',
   importFromLastYearId: '',
   users: [
@@ -398,7 +396,6 @@ function renderMain() {
   else if (state.view==='submit') main.appendChild(renderSubmit());
   else if (state.view==='review') main.appendChild(renderReview());
   else if (state.view==='admin-atts' && isAdminView) main.appendChild(renderAdminAtts());
-  else if (state.view==='admin-users' && isAdminView) main.appendChild(renderAdminUsers());
   else { state.view='dashboard'; main.appendChild(renderDashboard()); }
 
   wrap.appendChild(main);
@@ -418,7 +415,6 @@ function renderSidebar() {
   var items = [{id:'dashboard',label:'📊 Dashboard'},{id:'history',label:'📂 History'}];
   if (isAdmin) {
     items.push({id:'admin-atts',label:'📋 Attestations'});
-    items.push({id:'admin-users',label:'👥 Team Management'});
   }
   items.forEach(function(n) {
     var active = state.view===n.id;
@@ -2090,113 +2086,6 @@ function renderAdminAtts() {
     },'📄 Export Final Document'));
     card.appendChild(exportFoot);
 
-    wrap.appendChild(card);
-  });
-  return wrap;
-}
-
-// ═══════════ ADMIN USERS ═══════════
-function renderAdminUsers() {
-  var wrap = h('div',{style:{padding:'28px',maxWidth:'700px'}});
-  var inputStyle = {border:'1px solid #e2e8f0',borderRadius:'8px',padding:'10px 12px',fontSize:'13px',width:'100%',fontFamily:'inherit',outline:'none',boxSizing:'border-box'};
-  var labelStyle = {fontSize:'11px',fontWeight:'600',color:'#64748b',display:'block',marginBottom:'4px'};
-
-  // Header row
-  var hdr = h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'24px'}});
-  hdr.appendChild(h('div',{},[
-    h('h1',{style:{fontSize:'20px',fontWeight:'700',marginBottom:'2px'}},'Team Management'),
-    h('p',{style:{fontSize:'13px',color:'#64748b'}},'Manage users and attestation assignments')
-  ]));
-  hdr.appendChild(h('button',{style:{
-    padding:'8px 16px',fontSize:'13px',fontWeight:'600',border:'none',borderRadius:'8px',
-    background:state.showCreateUser?'#f1f5f9':'#FFD000',color:state.showCreateUser?'#475569':'#1A1A1A',cursor:'pointer'
-  },onClick:function(){
-    state.showCreateUser = !state.showCreateUser;
-    if (!state.showCreateUser) state.newUser = {name:'',role:'crew',atts:[]};
-    render();
-  }},state.showCreateUser?'✕ Cancel':'＋ Add Member'));
-  wrap.appendChild(hdr);
-
-  // Create form
-  if (state.showCreateUser) {
-    var form = h('div',{style:{background:'#fff',borderRadius:'12px',border:'2px solid #FFD000',padding:'20px',marginBottom:'20px'}});
-    form.appendChild(h('p',{style:{fontSize:'13px',fontWeight:'700',color:'#1e293b',marginBottom:'16px'}},'New Member'));
-
-    // Name
-    var nf = h('div',{style:{marginBottom:'14px'}});
-    nf.appendChild(h('label',{style:labelStyle},'Name *'));
-    var nameIn = h('input',{type:'text',placeholder:'e.g. Fraud & Risk Team',style:inputStyle});
-    nameIn.value = state.newUser.name;
-    nameIn.addEventListener('input',function(){state.newUser.name=this.value;});
-    nf.appendChild(nameIn);
-    form.appendChild(nf);
-
-    // Role
-    var rf = h('div',{style:{marginBottom:'14px'}});
-    rf.appendChild(h('label',{style:labelStyle},'Role'));
-    var roleEl = h('select',{style:inputStyle});
-    [{v:'crew',l:'Crew'},{v:'reviewer',l:'Reviewer'},{v:'admin',l:'Admin'}].forEach(function(o){
-      var opt = h('option',{value:o.v},o.l);
-      if (state.newUser.role===o.v) opt.selected = true;
-      roleEl.appendChild(opt);
-    });
-    roleEl.addEventListener('change',function(){state.newUser.role=this.value;});
-    rf.appendChild(roleEl);
-    form.appendChild(rf);
-
-    // Assign Attestations
-    if (state.attestations.length) {
-      var af = h('div',{style:{marginBottom:'14px'}});
-      af.appendChild(h('label',{style:labelStyle},'Assign Attestations'));
-      state.attestations.forEach(function(att){
-        var checked = state.newUser.atts.indexOf(att.id) >= 0;
-        var lbl = h('label',{style:{display:'flex',alignItems:'center',gap:'8px',fontSize:'13px',color:'#475569',marginBottom:'6px',cursor:'pointer'}});
-        var cb = h('input',{type:'checkbox'});
-        cb.checked = checked;
-        cb.addEventListener('change',function(){
-          if (this.checked) state.newUser.atts.push(att.id);
-          else state.newUser.atts = state.newUser.atts.filter(function(id){return id!==att.id;});
-        });
-        lbl.appendChild(cb);
-        lbl.appendChild(document.createTextNode(att.name));
-        af.appendChild(lbl);
-      });
-      form.appendChild(af);
-    }
-
-    // Buttons
-    form.appendChild(h('div',{style:{display:'flex',justifyContent:'flex-end',gap:'8px',marginTop:'20px',paddingTop:'16px',borderTop:'1px solid #f1f5f9'}},[
-      h('button',{style:{padding:'8px 16px',fontSize:'13px',border:'1px solid #e2e8f0',borderRadius:'8px',background:'#fff',color:'#475569',cursor:'pointer'},
-        onClick:function(){state.showCreateUser=false;state.newUser={name:'',role:'crew',atts:[]};render();}
-      },'Cancel'),
-      h('button',{style:{padding:'8px 20px',fontSize:'13px',fontWeight:'600',border:'none',borderRadius:'8px',background:'#FFD000',color:'#1A1A1A',cursor:'pointer'},
-        onClick:function(){
-          if (!state.newUser.name.trim()) { alert('Name is required.'); return; }
-          var newUser = {id:'u-'+Date.now(),name:state.newUser.name.trim(),role:state.newUser.role,atts:state.newUser.atts.slice()};
-          state.users.push(newUser);
-          state.newUser.atts.forEach(function(attId){
-            var att = state.attestations.find(function(a){return a.id===attId;});
-            if (att && att.teams.indexOf(newUser.id)<0) att.teams.push(newUser.id);
-          });
-          saveUsers(); saveAttestations();
-          state.newUser = {name:'',role:'crew',atts:[]};
-          state.showCreateUser = false;
-          render();
-        }
-      },'Add Member')
-    ]));
-    wrap.appendChild(form);
-  }
-
-  // Existing user list
-  state.users.forEach(function(u) {
-    var colors = {admin:'#6366f1',reviewer:'#14b8a6',crew:'#64748b'};
-    var card = h('div',{style:{background:'#fff',borderRadius:'12px',border:'1px solid #f1f5f9',padding:'14px 16px',marginBottom:'8px',display:'flex',alignItems:'center',gap:'12px'}});
-    card.appendChild(h('div',{style:{width:'32px',height:'32px',borderRadius:'50%',background:colors[u.role],color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:'700',fontSize:'11px',flexShrink:'0'}},u.name.slice(0,2).toUpperCase()));
-    card.appendChild(h('div',{style:{flex:'1',minWidth:'0'}},[
-      h('div',{style:{fontWeight:'600',fontSize:'13px',color:'#1e293b'}},u.name),
-      h('div',{style:{fontSize:'11px',color:'#94a3b8',textTransform:'capitalize'}},u.role+' · '+u.atts.length+' attestation(s)')
-    ]));
     wrap.appendChild(card);
   });
   return wrap;
