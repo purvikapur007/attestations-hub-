@@ -404,7 +404,8 @@ var ICONS = {
   logout:'<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5M21 12H9"/>',
   info:'<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5h.01"/>',
   history:'<path d="M3.05 11a9 9 0 1 1 .5 4"/><path d="M3 4.5V9h4.5"/><path d="M12 8v4l3 2"/>',
-  plus:'<path d="M12 5v14M5 12h14"/>'
+  plus:'<path d="M12 5v14M5 12h14"/>',
+  chevron:'<path d="M6 9l6 6 6-6"/>'
 };
 function icon(name, size, color, stroke) {
   var s = size || 16;
@@ -642,14 +643,33 @@ function openTask(att,q,task,view){
 function upsertTaskSub(att,q,task,teamId,evidence,status){
   var sub=getTaskSub(att.id,q.id,task.id,teamId);
   if(!sub){ sub={id:'sub-'+Date.now()+'-'+Math.random().toString(36).slice(2,6),attId:att.id,questionId:q.id,taskId:task.id,teamId:teamId,versions:[]}; state.submissions.push(sub); }
-  sub.evidence={text:(evidence.text||''),files:(evidence.files||[]).slice()};
+  var prevText=(sub.evidence&&sub.evidence.text)||'';
+  var newText=evidence.text||'';
+  sub.evidence={text:newText,files:(evidence.files||[]).slice()};
   sub.at=new Date().toISOString();
   sub.status=status;
   if(status==='submitted'){ sub.ai=evaluateTask(task,sub.evidence); sub.review=null; }
   sub.versions=sub.versions||[];
-  sub.versions.push({vNum:sub.versions.length+1,savedAt:sub.at,savedBy:(state.currentUser&&state.currentUser.name)||'',status:status,changes:[]});
+  sub.versions.push({vNum:sub.versions.length+1,savedAt:sub.at,savedBy:(state.currentUser&&state.currentUser.name)||'',status:status,text:newText,prevText:prevText,fileCount:(evidence.files||[]).length});
   saveSubmissions();
   return sub;
+}
+
+// Word-level diff (LCS) for change-tracking → array of {type:'same'|'add'|'del', text}
+function wordDiff(oldStr, newStr){
+  var a=String(oldStr||'').split(/(\s+)/), b=String(newStr||'').split(/(\s+)/);
+  var n=a.length, m=b.length;
+  var dp=[]; for(var i=0;i<=n;i++){ dp[i]=[]; for(var j=0;j<=m;j++) dp[i][j]=0; }
+  for(var i2=n-1;i2>=0;i2--) for(var j2=m-1;j2>=0;j2--) dp[i2][j2]=a[i2]===b[j2]?dp[i2+1][j2+1]+1:Math.max(dp[i2+1][j2],dp[i2][j2+1]);
+  var out=[], x=0, y=0;
+  while(x<n&&y<m){
+    if(a[x]===b[y]){ out.push({type:'same',text:a[x]}); x++; y++; }
+    else if(dp[x+1][y]>=dp[x][y+1]){ out.push({type:'del',text:a[x]}); x++; }
+    else { out.push({type:'add',text:b[y]}); y++; }
+  }
+  while(x<n){ out.push({type:'del',text:a[x++]}); }
+  while(y<m){ out.push({type:'add',text:b[y++]}); }
+  return out;
 }
 
 // ═══════════ DASHBOARD ═══════════
@@ -841,7 +861,11 @@ function renderAttestation(){
     h('span',{className:'tnum',style:{fontSize:'11px',color:'var(--faint)'}},'Due '+fmtDate(att.due)),
     queue>0?h('span',{style:{display:'inline-flex',alignItems:'center',gap:'6px',fontSize:'11px',fontWeight:'600',padding:'3px 9px',borderRadius:'20px',background:'var(--info-bg)',color:'var(--info)'}},[icon('clock',12,'#2A5BD7'),h('span',{},queue+' to review')]):null
   ]));
-  head.appendChild(h('h1',{style:{fontSize:'21px',fontWeight:'700',letterSpacing:'-0.4px',marginBottom:'12px'}},att.name));
+  head.appendChild(h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:'12px',marginBottom:'12px'}},[
+    h('h1',{style:{fontSize:'21px',fontWeight:'700',letterSpacing:'-0.4px'}},att.name),
+    h('button',{style:{display:'inline-flex',alignItems:'center',gap:'7px',padding:'8px 14px',fontSize:'12px',fontWeight:'600',border:'1px solid var(--border-strong)',borderRadius:'9px',background:'#fff',color:'var(--text)',cursor:'pointer',flexShrink:'0'},
+      onClick:(function(a){return function(){exportFinalAttestationDoc(a);};})(att)},[icon('download',15),h('span',{},'Export report')])
+  ]));
   head.appendChild(taskStatusBar(r));
   wrap.appendChild(head);
 
@@ -892,48 +916,109 @@ function renderReview(){
   wrap.appendChild(hh);
   if(!sub){ wrap.appendChild(emptyCard('This task has not been submitted yet.')); return wrap; }
 
-  var evCard=h('div',{style:{background:'#fff',borderRadius:'14px',border:'1px solid var(--border)',boxShadow:'var(--shadow-sm)',padding:'18px',marginBottom:'16px'}});
-  evCard.appendChild(h('p',{style:{fontSize:'10px',fontWeight:'700',color:'var(--muted)',letterSpacing:'.5px',marginBottom:'8px'}},'SUBMITTED EVIDENCE'));
-  if(sub.evidence&&sub.evidence.text) evCard.appendChild(h('p',{style:{fontSize:'13px',color:'var(--text)',whiteSpace:'pre-wrap',lineHeight:'1.55'}},sub.evidence.text));
-  else evCard.appendChild(h('p',{style:{fontSize:'12px',color:'var(--faint)'}},'No text evidence provided.'));
+  // Collapsible section — reviewers can fold any block down to just its title
+  function section(headerChildren, bodyChildren, open){
+    var card=h('div',{style:{background:'#fff',borderRadius:'14px',border:'1px solid var(--border)',boxShadow:'var(--shadow-sm)',padding:'15px 18px',marginBottom:'14px'}});
+    var chev=icon('chevron',16,'#9098A2'); chev.style.transition='transform .15s';
+    var titleWrap=h('div',{style:{flex:'1',minWidth:'0',display:'flex',alignItems:'center',gap:'8px'}}, headerChildren);
+    var head=h('div',{style:{display:'flex',alignItems:'center',gap:'10px',cursor:'pointer',userSelect:'none'}},[titleWrap, chev]);
+    var body=h('div',{style:{marginTop:'13px'}}, bodyChildren);
+    var isOpen=open!==false;
+    function sync(){ body.style.display=isOpen?'block':'none'; chev.style.transform=isOpen?'rotate(180deg)':'rotate(0deg)'; }
+    head.addEventListener('click',function(){ isOpen=!isOpen; sync(); });
+    sync();
+    card.appendChild(head); card.appendChild(body);
+    return card;
+  }
+  function eyebrow(txt){ return h('span',{style:{fontSize:'10px',fontWeight:'700',color:'var(--muted)',letterSpacing:'.5px'}},txt); }
+
+  // ── Submitted evidence (open) ──
+  var evBody=[];
+  if(sub.evidence&&sub.evidence.text) evBody.push(h('p',{style:{fontSize:'13px',color:'var(--text)',whiteSpace:'pre-wrap',lineHeight:'1.55'}},sub.evidence.text));
+  else evBody.push(h('p',{style:{fontSize:'12px',color:'var(--faint)'}},'No text evidence provided.'));
   if(sub.evidence&&sub.evidence.files&&sub.evidence.files.length){
     var g=h('div',{style:{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'8px',marginTop:'12px'}});
     sub.evidence.files.forEach(function(f){ if(/^data:image/.test(f.data)) g.appendChild(h('img',{src:f.data,style:{width:'100%',height:'66px',objectFit:'cover',borderRadius:'8px',border:'1px solid var(--border)'}})); else g.appendChild(h('div',{style:{height:'66px',display:'flex',alignItems:'center',justifyContent:'center',background:'var(--bg-sub)',borderRadius:'8px',border:'1px solid var(--border)'}},icon('fileText',20,'#9098A2'))); });
-    evCard.appendChild(g);
-  } else { evCard.appendChild(h('p',{style:{fontSize:'11px',color:'var(--faint)',marginTop:'8px'}},'(File attachments are not persisted across sessions in this prototype.)')); }
-  wrap.appendChild(evCard);
+    evBody.push(g);
+  } else { evBody.push(h('p',{style:{fontSize:'11px',color:'var(--faint)',marginTop:'8px'}},'(File attachments are not persisted across sessions in this prototype.)')); }
+  wrap.appendChild(section([eyebrow('SUBMITTED EVIDENCE')], evBody, true));
 
+  // ── AI compliance check (open) ──
   if(sub.ai){
     var ai=sub.ai;
-    var aiCard=h('div',{style:{background:'#fff',borderRadius:'14px',border:'1px solid var(--border)',boxShadow:'var(--shadow-sm)',padding:'18px',marginBottom:'16px'}});
-    aiCard.appendChild(h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'10px'}},[
-      h('p',{style:{display:'flex',alignItems:'center',gap:'7px',fontSize:'10px',fontWeight:'700',color:'var(--accent-deep)',letterSpacing:'.5px'}},[icon('sparkles',14,'#7A5B00'),h('span',{},'AI COMPLIANCE CHECK')]),
+    var aiHeader=[
+      h('div',{style:{flex:'1',minWidth:'0',display:'flex',alignItems:'center',gap:'7px'}},[icon('sparkles',14,'#7A5B00'),eyebrow('AI COMPLIANCE CHECK')]),
       h('span',{style:{display:'inline-flex',alignItems:'center',gap:'6px',fontSize:'12px',fontWeight:'700',color:ai.compliant?'#127A56':'#C0362C'}},[icon(ai.compliant?'check':'alert',15,ai.compliant?'#127A56':'#C0362C'),h('span',{},ai.compliant?'All criteria met':ai.met+'/'+ai.total+' met')])
-    ]));
-    if(!ai.results.length) aiCard.appendChild(h('p',{style:{fontSize:'12px',color:'var(--faint)'}},'No criteria were defined for this task.'));
-    ai.results.forEach(function(rr){ aiCard.appendChild(h('div',{style:{display:'flex',alignItems:'flex-start',gap:'8px',fontSize:'12px',padding:'4px 0',color:rr.met?'#127A56':'var(--muted)'}},[ h('span',{style:{flexShrink:'0',display:'flex',marginTop:'1px'}},icon(rr.met?'check':'x',14,rr.met?'#127A56':'#C0362C')), h('span',{},rr.text+(rr.note&&!rr.met?' — '+rr.note:'')) ])); });
-    wrap.appendChild(aiCard);
+    ];
+    var aiBody=[];
+    if(!ai.results.length) aiBody.push(h('p',{style:{fontSize:'12px',color:'var(--faint)'}},'No criteria were defined for this task.'));
+    ai.results.forEach(function(rr){ aiBody.push(h('div',{style:{display:'flex',alignItems:'flex-start',gap:'8px',fontSize:'12px',padding:'4px 0',color:rr.met?'#127A56':'var(--muted)'}},[ h('span',{style:{flexShrink:'0',display:'flex',marginTop:'1px'}},icon(rr.met?'check':'x',14,rr.met?'#127A56':'#C0362C')), h('span',{},rr.text+(rr.note&&!rr.met?' — '+rr.note:'')) ])); });
+    wrap.appendChild(section(aiHeader, aiBody, true));
   }
 
-  if(sub.review&&sub.review.by){
-    wrap.appendChild(h('div',{style:{background:'var(--bg-sub)',borderRadius:'12px',border:'1px solid var(--border)',padding:'12px 14px',marginBottom:'16px',fontSize:'12px',color:'var(--muted)'}},
-      'Last decision by '+sub.review.by+' · '+fmtDate(sub.review.at)+(sub.review.comments?' — '+sub.review.comments:'')));
+  // ── Response history (collapsed by default → shows just the title) ──
+  var subdVers=(sub.versions||[]).filter(function(v){return v.status==='submitted';});
+  if(sub.versions&&sub.versions.length){
+    var histHeader=[
+      h('div',{style:{flex:'1',minWidth:'0',display:'flex',alignItems:'center',gap:'7px'}},[icon('history',14,'#646B76'),eyebrow('RESPONSE HISTORY')]),
+      h('span',{style:{fontSize:'11px',padding:'1px 7px',borderRadius:'10px',background:'var(--bg-sub)',color:'var(--muted)'}},subdVers.length+' submission'+(subdVers.length!==1?'s':''))
+    ];
+    var histBody=[];
+    if(subdVers.length>=2){
+      var prevV=subdVers[subdVers.length-2], lastV=subdVers[subdVers.length-1];
+      histBody.push(h('p',{style:{fontSize:'11px',fontWeight:'600',color:'var(--text)',marginBottom:'6px'}},'Changes since the previous submission ('+fmtDate(prevV.savedAt)+')'));
+      var diffBox=h('div',{style:{fontSize:'13px',lineHeight:'1.65',whiteSpace:'pre-wrap',background:'var(--bg-sub)',border:'1px solid var(--border)',borderRadius:'8px',padding:'12px'}});
+      wordDiff(prevV.text||'',lastV.text||'').forEach(function(tok){
+        if(/^\s+$/.test(tok.text)){ diffBox.appendChild(document.createTextNode(tok.text)); return; }
+        if(tok.type==='add') diffBox.appendChild(h('span',{style:{background:'#D7F0E3',color:'#0E5C41',borderRadius:'3px',padding:'0 1px'}},tok.text));
+        else if(tok.type==='del') diffBox.appendChild(h('span',{style:{color:'#C0362C',textDecoration:'line-through'}},tok.text));
+        else diffBox.appendChild(h('span',{style:{color:'var(--text)'}},tok.text));
+      });
+      histBody.push(diffBox);
+      histBody.push(h('div',{style:{display:'flex',gap:'16px',marginTop:'8px',fontSize:'10px',color:'var(--faint)'}},[
+        h('span',{style:{display:'inline-flex',alignItems:'center',gap:'5px'}},[h('span',{style:{width:'11px',height:'11px',borderRadius:'2px',background:'#D7F0E3',display:'inline-block'}}),h('span',{},'Added')]),
+        h('span',{style:{display:'inline-flex',alignItems:'center',gap:'5px'}},[h('span',{style:{width:'12px',borderTop:'2px solid #C0362C',display:'inline-block'}}),h('span',{},'Removed')])
+      ]));
+    } else {
+      histBody.push(h('p',{style:{fontSize:'12px',color:'var(--faint)'}},'First submission — no previous version to compare.'));
+    }
+    var tl=h('div',{style:{marginTop:'12px',borderTop:'1px solid var(--border)',paddingTop:'10px'}});
+    sub.versions.slice().reverse().forEach(function(v){
+      var lab=v.status==='submitted'?'Submitted':v.status==='in_progress'?'Saved draft':v.status;
+      var dot=v.status==='submitted'?'#2A5BD7':'#FFC400';
+      tl.appendChild(h('div',{className:'tnum',style:{display:'flex',alignItems:'center',gap:'8px',fontSize:'11px',color:'var(--muted)',padding:'3px 0'}},[
+        h('span',{style:{width:'6px',height:'6px',borderRadius:'50%',background:dot,flexShrink:'0'}}),
+        h('span',{style:{fontWeight:'600',color:'var(--text)'}},'v'+v.vNum),
+        h('span',{},lab),
+        h('span',{style:{marginLeft:'auto'}},fmtDate(v.savedAt)+' · '+(v.savedBy||'—'))
+      ]));
+    });
+    histBody.push(tl);
+    wrap.appendChild(section(histHeader, histBody, false));
   }
 
+  // ── Reviewer decision (open) ──
   if(u.role==='admin'||u.role==='reviewer'){
     var decComment=(sub.review&&sub.review.comments)||'';
-    var decCard=h('div',{style:{background:'#fff',borderRadius:'14px',border:'1px solid var(--border)',boxShadow:'var(--shadow-sm)',padding:'18px'}});
-    decCard.appendChild(h('p',{style:{fontSize:'10px',fontWeight:'700',color:'var(--muted)',letterSpacing:'.5px',marginBottom:'10px'}},'REVIEWER DECISION'));
-    var ta=h('textarea',{style:{width:'100%',height:'62px',border:'1px solid var(--border)',borderRadius:'8px',padding:'9px 11px',fontSize:'12px',resize:'none',fontFamily:'inherit',outline:'none',boxSizing:'border-box',marginBottom:'10px'},placeholder:'Comment (optional)'});
-    ta.value=decComment; ta.addEventListener('input',function(){decComment=this.value;});
-    decCard.appendChild(ta);
-    function decide(status){ sub.status=status; sub.review={by:u.name,comments:decComment,at:new Date().toISOString()}; saveSubmissions(); backTo(); }
-    var row=h('div',{style:{display:'flex',gap:'8px',flexWrap:'wrap'}});
-    row.appendChild(h('button',{style:{display:'inline-flex',alignItems:'center',gap:'6px',padding:'8px 16px',fontSize:'13px',fontWeight:'600',borderRadius:'9px',border:'1.5px solid #127A56',background:'var(--ok-bg)',color:'#127A56',cursor:'pointer'},onClick:function(){decide('compliant');}},[icon('check',15,'#127A56'),h('span',{},'Mark compliant')]));
-    row.appendChild(h('button',{style:{display:'inline-flex',alignItems:'center',gap:'6px',padding:'8px 16px',fontSize:'13px',fontWeight:'600',borderRadius:'9px',border:'1.5px solid #C0362C',background:'var(--danger-bg)',color:'#C0362C',cursor:'pointer'},onClick:function(){decide('needs_work');}},[icon('x',15,'#C0362C'),h('span',{},'Send back (needs work)')]));
-    decCard.appendChild(row);
-    wrap.appendChild(decCard);
+    var decBody=[];
+    decBody.push(h('label',{style:{fontSize:'11px',fontWeight:'600',color:'var(--muted)',display:'block',marginBottom:'5px'}},[h('span',{},'Comment '),h('span',{style:{color:'#C0362C'}},'*required')]));
+    var ta=h('textarea',{style:{width:'100%',height:'64px',border:'1px solid '+(decComment.trim()?'var(--border)':'#E2A8A2'),borderRadius:'8px',padding:'9px 11px',fontSize:'12px',resize:'none',fontFamily:'inherit',outline:'none',boxSizing:'border-box',marginBottom:'10px'},placeholder:'Explain your decision — this is recorded against the task and shown to the team.'});
+    ta.value=decComment;
+    var btnA=h('button',{style:{display:'inline-flex',alignItems:'center',gap:'6px',padding:'8px 16px',fontSize:'13px',fontWeight:'600',borderRadius:'9px',border:'1.5px solid #127A56',background:'var(--ok-bg)',color:'#127A56'}},[icon('check',15,'#127A56'),h('span',{},'Mark compliant')]);
+    var btnB=h('button',{style:{display:'inline-flex',alignItems:'center',gap:'6px',padding:'8px 16px',fontSize:'13px',fontWeight:'600',borderRadius:'9px',border:'1.5px solid #C0362C',background:'var(--danger-bg)',color:'#C0362C'}},[icon('x',15,'#C0362C'),h('span',{},'Send back (needs work)')]);
+    function syncBtns(){ var ok=ta.value.trim().length>0; [btnA,btnB].forEach(function(b){ b.disabled=!ok; b.style.opacity=ok?'1':'.45'; b.style.cursor=ok?'pointer':'not-allowed'; }); ta.style.borderColor=ok?'var(--border)':'#E2A8A2'; }
+    ta.addEventListener('input',function(){ decComment=this.value; syncBtns(); });
+    decBody.push(ta);
+    function decide(status){ if(!decComment.trim()){ alert('A reviewer comment is required before you can decide.'); ta.focus(); return; } sub.status=status; sub.review={by:u.name,comments:decComment.trim(),at:new Date().toISOString()}; saveSubmissions(); backTo(); }
+    btnA.addEventListener('click',function(){decide('compliant');});
+    btnB.addEventListener('click',function(){decide('needs_work');});
+    decBody.push(h('div',{style:{display:'flex',gap:'8px',flexWrap:'wrap'}},[btnA,btnB]));
+    if(sub.review&&sub.review.by) decBody.unshift(h('div',{style:{background:'var(--bg-sub)',borderRadius:'10px',border:'1px solid var(--border)',padding:'10px 12px',marginBottom:'12px',fontSize:'12px',color:'var(--muted)'}},
+      'Last decision by '+sub.review.by+' · '+fmtDate(sub.review.at)+(sub.review.comments?' — '+sub.review.comments:'')));
+    wrap.appendChild(section([eyebrow('REVIEWER DECISION')], decBody, true));
+    syncBtns();
   }
+
   return wrap;
 }
 
@@ -950,33 +1035,101 @@ function downloadHtml(filename, html) {
   setTimeout(function(){URL.revokeObjectURL(url);},5000);
 }
 
+var REPORT_SEGS = [['compliant','Compliant','#127A56'],['submitted','Under review','#2A5BD7'],['in_progress','In progress','#E0A800'],['needs_work','Needs work','#C0362C'],['not_started','Not started','#C9CDD3']];
+
 function exportFinalAttestationDoc(att){
-  var rows=(att.questions||[]).map(function(q,qi){
-    var tHtml=(q.tasks||[]).map(function(t){
-      var team=state.users.find(function(u){return u.id===t.teamId;});
-      var sub=getTaskSub(att.id,q.id,t.id,t.teamId);
-      var st=getTaskStatus(att,q,t); var meta=TASK_STATUS_META[st];
-      var critRows=(t.criteria||[]).map(function(c){ var res=sub&&sub.ai?(sub.ai.results.filter(function(r){return r.id===c.id;})[0]):null; var ok=res?res.met:false; return '<li style="color:'+(ok?'#127A56':'#9098A2')+';margin:2px 0">'+(ok?'Met':'Not met')+' — '+escHtml(c.text)+'</li>'; }).join('');
-      var evTxt = (sub&&sub.evidence&&sub.evidence.text)?escHtml(sub.evidence.text):'<em style="color:#9098A2">No evidence submitted</em>';
-      return '<div style="border:1px solid #E6E8EC;border-radius:10px;padding:14px;margin:8px 0">'
-        +'<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><strong style="font-size:13px">'+escHtml(t.title)+'</strong>'
-        +'<span style="font-size:11px;font-weight:700;color:'+meta.color+'">'+meta.label+'</span></div>'
-        +'<div style="font-size:11px;color:#646B76;margin:2px 0 8px">Team: '+escHtml(team?team.name:'Unassigned')+'</div>'
-        +'<div style="font-size:12px;color:#1B1E25;white-space:pre-wrap;margin-bottom:'+(critRows?'8px':'0')+'">'+evTxt+'</div>'
-        +(critRows?'<ul style="font-size:11px;padding-left:16px;margin:0">'+critRows+'</ul>':'')
-        +'</div>';
+  var R=getAttRollup(att);
+  var overallPct=R.total?Math.round(R.compliant/R.total*100):0;
+
+  // Donut of task-status breakdown
+  function donut(){
+    var rad=52, C=2*Math.PI*rad, off=0, parts='', total=R.total||1;
+    REPORT_SEGS.forEach(function(s){ var v=R[s[0]]||0; if(!v)return; var len=v/total*C;
+      parts+='<circle cx="70" cy="70" r="'+rad+'" fill="none" stroke="'+s[2]+'" stroke-width="20" stroke-dasharray="'+len.toFixed(2)+' '+(C-len).toFixed(2)+'" stroke-dashoffset="'+(-off).toFixed(2)+'" transform="rotate(-90 70 70)"/>'; off+=len; });
+    return '<svg width="140" height="140" viewBox="0 0 140 140">'+parts
+      +'<text x="70" y="66" text-anchor="middle" font-size="27" font-weight="800" fill="#16181D">'+overallPct+'%</text>'
+      +'<text x="70" y="85" text-anchor="middle" font-size="10" fill="#646B76">compliant</text></svg>';
+  }
+  function legend(){
+    return REPORT_SEGS.map(function(s){ return '<div style="display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:7px"><span style="width:11px;height:11px;border-radius:3px;background:'+s[2]+';display:inline-block;flex-shrink:0"></span><span style="flex:1;color:#1B1E25">'+s[1]+'</span><span style="font-weight:700;font-variant-numeric:tabular-nums">'+(R[s[0]]||0)+'</span></div>'; }).join('');
+  }
+  function kpis(){
+    var notDone=R.not_started+R.in_progress+R.needs_work;
+    var tiles=[['Total tasks',R.total,'#16181D'],['Compliant',R.compliant,'#127A56'],['Under review',R.submitted,'#2A5BD7'],['Not completed',notDone,'#B8860B']];
+    return tiles.map(function(t){ return '<div class="tile"><div class="n" style="color:'+t[2]+'">'+t[1]+'</div><div class="l">'+t[0]+'</div></div>'; }).join('');
+  }
+  function questionBars(){
+    return (att.questions||[]).map(function(q,i){
+      var ts=q.tasks||[]; var tot=ts.length||1; var comp=ts.filter(function(t){return getTaskStatus(att,q,t)==='compliant';}).length; var pct=Math.round(comp/tot*100);
+      return '<div style="margin-bottom:12px"><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:5px"><span style="color:#1B1E25">Q'+(i+1)+'. '+escHtml(q.title)+'</span><span style="font-weight:700;font-variant-numeric:tabular-nums">'+comp+'/'+tot+'</span></div><div style="height:8px;background:#EDEFF2;border-radius:99px;overflow:hidden"><div style="height:100%;width:'+pct+'%;background:#127A56;border-radius:99px"></div></div></div>';
     }).join('');
-    return '<h3 style="font-size:14px;margin:18px 0 4px">Q'+(qi+1)+'. '+escHtml(q.title)+'</h3>'+(q.desc?'<p style="font-size:12px;color:#646B76;margin:0 0 6px">'+escHtml(q.desc)+'</p>':'')+tHtml;
-  }).join('');
-  var html='<!DOCTYPE html><html><head><meta charset="UTF-8"><title>'+escHtml(att.name)+'</title>'
-    +'<style>body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#F4F5F7;color:#1B1E25;margin:0;padding:32px}</style></head><body>'
-    +'<div style="max-width:820px;margin:0 auto">'
-    +'<div style="font-size:20px;font-weight:800;color:#16181D;border-bottom:2px solid #FFC400;padding-bottom:10px;margin-bottom:16px">AttestHub</div>'
-    +'<span style="font-size:11px;padding:2px 9px;border-radius:20px;background:#E8EEFC;color:#2A5BD7">'+escHtml(att.scheme)+'</span>'
-    +'<h1 style="font-size:20px;margin:8px 0 2px">'+escHtml(att.name)+'</h1>'
-    +'<p style="font-size:12px;color:#646B76;margin:0 0 8px">Due '+fmtDate(att.due)+' · Generated '+fmtDate(new Date())+'</p>'
-    +rows+'</div></body></html>';
-  downloadHtml('AttestHub-'+att.name.replace(/[^a-z0-9]+/gi,'-')+'.html',html);
+  }
+  function teamBars(){
+    var ids=teamsForAtt(att); if(!ids.length) return '<p style="font-size:12px;color:#9098A2">No teams assigned.</p>';
+    return ids.map(function(tid){
+      var u=state.users.find(function(x){return x.id===tid;}); var tr=getAttRollup(att,{teamId:tid});
+      var segHtml=REPORT_SEGS.map(function(s){ var v=tr[s[0]]||0; if(!v)return''; return '<div style="width:'+(v/(tr.total||1)*100)+'%;background:'+s[2]+'"></div>'; }).join('');
+      return '<div style="margin-bottom:12px"><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:5px"><span style="color:#1B1E25">'+escHtml(u?u.name:tid)+'</span><span style="color:#646B76;font-variant-numeric:tabular-nums">'+tr.compliant+'/'+tr.total+' compliant</span></div><div style="display:flex;height:8px;border-radius:99px;overflow:hidden;background:#EDEFF2">'+segHtml+'</div></div>';
+    }).join('');
+  }
+  function detail(){
+    return (att.questions||[]).map(function(q,qi){
+      var qComp=(q.tasks||[]).filter(function(t){return getTaskStatus(att,q,t)==='compliant';}).length;
+      var tasks=(q.tasks||[]).map(function(t){
+        var team=state.users.find(function(u){return u.id===t.teamId;});
+        var sub=getTaskSub(att.id,q.id,t.id,t.teamId);
+        var st=getTaskStatus(att,q,t); var meta=TASK_STATUS_META[st];
+        var crit=(t.criteria||[]).map(function(c){ var res=sub&&sub.ai?(sub.ai.results.filter(function(r){return r.id===c.id;})[0]):null; var ok=res?res.met:false; return '<li style="color:'+(ok?'#127A56':'#9098A2')+';margin:2px 0">'+(ok?'&#10003; ':'&#9675; ')+escHtml(c.text)+'</li>'; }).join('');
+        var ev=(sub&&sub.evidence&&sub.evidence.text)?escHtml(sub.evidence.text):'<em style="color:#9098A2">No evidence submitted</em>';
+        var rev=(sub&&sub.review&&sub.review.by)?'<div style="font-size:11px;color:#646B76;margin-top:8px;border-top:1px solid #EEF0F3;padding-top:6px">Reviewed by '+escHtml(sub.review.by)+(sub.review.comments?' — &ldquo;'+escHtml(sub.review.comments)+'&rdquo;':'')+'</div>':'';
+        return '<div style="border:1px solid #E6E8EC;border-radius:10px;padding:14px;margin:8px 0">'
+          +'<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><strong style="font-size:13px">'+escHtml(t.title)+'</strong>'
+          +'<span style="font-size:11px;font-weight:700;padding:2px 9px;border-radius:20px;background:'+meta.bg+';color:'+meta.color+'">'+meta.label+'</span></div>'
+          +'<div style="font-size:11px;color:#646B76;margin:2px 0 8px">Team: '+escHtml(team?team.name:'Unassigned')+'</div>'
+          +'<div style="font-size:12px;color:#1B1E25;white-space:pre-wrap">'+ev+'</div>'
+          +(crit?'<ul style="font-size:11px;padding-left:16px;margin:8px 0 0">'+crit+'</ul>':'')+rev+'</div>';
+      }).join('');
+      return '<div class="card" style="break-inside:avoid"><div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="width:24px;height:24px;border-radius:7px;background:#16181D;color:#FFC400;font-weight:800;font-size:11px;display:inline-flex;align-items:center;justify-content:center">Q'+(qi+1)+'</span><strong style="font-size:15px">'+escHtml(q.title)+'</strong><span style="margin-left:auto;font-size:11px;color:#646B76;font-variant-numeric:tabular-nums">'+qComp+'/'+(q.tasks||[]).length+' compliant</span></div>'
+        +(q.desc?'<p style="font-size:12px;color:#646B76;margin:0 0 4px">'+escHtml(q.desc)+'</p>':'')+tasks+'</div>';
+    }).join('');
+  }
+
+  var schemeChipCss = att.scheme==='AP+'?'background:#F5EEFE;color:#7c3aed':'background:#E8EEFC;color:#2A5BD7';
+  var html='<!DOCTYPE html><html><head><meta charset="UTF-8"><title>'+escHtml(att.name)+' — Compliance Report</title>'
+    +'<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
+    +'<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">'
+    +'<style>*{box-sizing:border-box}body{font-family:Inter,-apple-system,Segoe UI,Roboto,sans-serif;background:#F4F5F7;color:#1B1E25;margin:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}'
+    +'.brand{display:flex;align-items:center;gap:11px;background:#16181D;border-bottom:3px solid #FFC400;padding:18px 28px}'
+    +'.brand .logo{width:30px;height:30px;border-radius:8px;background:#FFC400;color:#16181D;font-weight:800;display:flex;align-items:center;justify-content:center}'
+    +'.brand .nm{font-family:Space Grotesk,sans-serif;color:#fff;font-size:18px;font-weight:700;letter-spacing:-.3px}'
+    +'.brand .sub{margin-left:auto;color:rgba(255,255,255,.5);font-size:11px}'
+    +'.wrap{max-width:880px;margin:0 auto;padding:28px}'
+    +'.card{background:#fff;border:1px solid #E6E8EC;border-radius:14px;box-shadow:0 1px 2px rgba(16,18,23,.05);padding:18px;margin-bottom:16px}'
+    +'.eyebrow{font-size:10px;font-weight:700;letter-spacing:.6px;color:#646B76;text-transform:uppercase;margin-bottom:12px}'
+    +'.kpi{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}'
+    +'.tile{background:#FAFBFC;border:1px solid #E6E8EC;border-radius:12px;padding:14px}'
+    +'.tile .n{font-size:26px;font-weight:800;letter-spacing:-1px;line-height:1;font-variant-numeric:tabular-nums}.tile .l{font-size:11px;color:#646B76;margin-top:5px}'
+    +'.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}@media(max-width:680px){.grid2{grid-template-columns:1fr}}'
+    +'</style></head><body>'
+    +'<div class="brand"><span class="logo">&#9679;</span><span class="nm">AttestHub</span><span class="sub">Compliance Report &middot; '+fmtDate(new Date())+'</span></div>'
+    +'<div class="wrap">'
+    +'<span class="chip" style="font-size:11px;padding:2px 9px;border-radius:20px;font-weight:600;'+schemeChipCss+'">'+escHtml(att.scheme)+'</span>'
+    +'<h1 style="font-size:24px;font-weight:800;letter-spacing:-.6px;margin:10px 0 2px">'+escHtml(att.name)+'</h1>'
+    +'<p style="font-size:12px;color:#646B76;margin:0 0 4px">Due '+fmtDate(att.due)+' &middot; '+(att.questions||[]).length+' questions &middot; '+R.total+' tasks</p>'
+    +(att.desc?'<p style="font-size:13px;color:#1B1E25;margin:8px 0 0;max-width:640px">'+escHtml(att.desc)+'</p>':'')
+    +'<div class="grid2" style="margin-top:20px">'
+      +'<div class="card"><div class="eyebrow">Compliance overview</div><div style="display:flex;align-items:center;gap:18px">'+donut()+'<div style="flex:1">'+legend()+'</div></div></div>'
+      +'<div class="card"><div class="eyebrow">By the numbers</div><div class="kpi">'+kpis()+'</div></div>'
+    +'</div>'
+    +'<div class="grid2">'
+      +'<div class="card"><div class="eyebrow">Compliance by question</div>'+questionBars()+'</div>'
+      +'<div class="card"><div class="eyebrow">Progress by team</div>'+teamBars()+'</div>'
+    +'</div>'
+    +'<div class="eyebrow" style="margin:24px 0 8px">Detailed breakdown</div>'
+    +detail()
+    +'<p style="font-size:10px;color:#9098A2;margin-top:20px;text-align:center">Generated by AttestHub &middot; AI compliance checks are advisory; a reviewer makes the final decision.</p>'
+    +'</div></body></html>';
+  downloadHtml('AttestHub-Report-'+att.name.replace(/[^a-z0-9]+/gi,'-')+'.html',html);
 }
 
 function exportDashboardReport(){
